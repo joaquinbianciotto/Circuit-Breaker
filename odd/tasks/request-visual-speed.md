@@ -21,6 +21,7 @@ Slow observed request journeys so users can follow their route without changing 
 - Browser checks must use isolated native services, never --docker or reset existing lab data. No installations without approval.
 
 ## Evidence and delivery
+Work-unit commit: `87c6223907fe473eb784ab73fd41eeca0a7859a6` — `feat(frontend): add visual request speed control` (T1/T2, code/tests/docs together).
 T1 worker evidence: RED 3 expected failures/27 passes; GREEN 30 focused tests, 33 frontend tests, contracts/frontend builds and diff check passed. Source spot-check confirms only journey delta scaled and ref-based rate updates. Initial browser verification caught Focus overflow; correction and full worker browser GREEN recorded below. Current branch: feat/resilience-lab; starting worktree clean. User explicitly requested the work-unit commit. Push and deployment remain unauthorized.
 Rollback boundary: remove visual multiplier/control, related tests and docs without changing backend behavior.
 
