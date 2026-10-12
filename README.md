@@ -30,6 +30,6 @@ One logical operation contains bounded attempts: 800 ms full-body timeout, two a
 
 ## Verification and reference
 
-The existing technical suite contains 54 tests, including compiled entrypoints and real HTTP/SSE. Run npm test after building. Audit with npm audit --json and npm audit --omit=dev --json; audits are registry evidence, not security approval. Vitest is locked to 5.0.3 and compatible esbuild to 0.28.2.
+The existing technical suite contains 60 tests, including compiled entrypoints and real HTTP/SSE. Run npm test after building. Audit with npm audit --json and npm audit --omit=dev --json; audits are registry evidence, not security approval. Vitest is locked to 5.0.3 and compatible esbuild to 0.28.2.
 
 [Engine API, completed-operation statistics and SSE semantics](docs/engine.md). No push or PR was performed; native review approval is not claimed.

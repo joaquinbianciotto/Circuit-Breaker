@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { performance } from 'node:perf_hooks';
 import { DEFAULT_POLICY, ValidationError, type Policy } from '@resilience/contracts';
 import { createExternalApi } from '../../external-api/src/server';
 import { ConflictError, Engine, ProxyError } from '../src/engine';
@@ -165,6 +166,111 @@ describe('real HTTP logical operations', () => {
       expect(engine.snapshot().events.find(event => event.type === 'ATTEMPT_TIMEOUT')?.status).toBe(status);
       await until(() => cancelled === 1);
     } finally { clearTimeout(bodyTimer); await streaming.close(); }
+  });
+});
+
+describe('controlled monotonic backoff with real HTTP', () => {
+  const realSetTimeout = setTimeout;
+  let now: number;
+  let captureWait: boolean;
+  let firstFailureAt: number;
+  let waits: { delay: number; timer: NodeJS.Timeout; wake: (at: number) => void }[];
+  beforeEach(async () => {
+    replacePolicy({ retries: 1, backoffMs: 25, operationDeadlineMs: 100 });
+    await configure({ mode: 'fail' });
+    now = 0;
+    firstFailureAt = 20.25;
+    captureWait = false;
+    waits = [];
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const publish = engine.journal.publish.bind(engine.journal);
+    vi.spyOn(engine.journal, 'publish').mockImplementation(event => {
+      if (event.type === 'ATTEMPT_FAILED' && event.index === 1) now = firstFailureAt;
+      if (event.type === 'RETRY_SCHEDULED') captureWait = true;
+      if (event.type === 'RETRY_STARTED') captureWait = false;
+      return publish(event);
+    });
+    vi.spyOn(globalThis, 'clearTimeout');
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation(((callback: () => void, delay: number) => {
+      if (!captureWait || delay > 200) return realSetTimeout(callback, delay);
+      const timer = realSetTimeout(() => {}, 60000);
+      waits.push({ delay, timer, wake: at => { now = at; clearTimeout(timer); callback(); } });
+      return timer;
+    }) as typeof setTimeout);
+  });
+  afterEach(() => { engine.shutdown(); vi.restoreAllMocks(); });
+  async function waitFor(check: () => boolean) {
+    for (let i = 0; i < 200 && !check(); i++) await new Promise(resolve => realSetTimeout(resolve, 5));
+    expect(check(), JSON.stringify(engine.snapshot().events)).toBe(true);
+  }
+  it('fractional truncated backoff never admits an early HTTP retry', async () => {
+    engine.configure({ backoffMs: 200 });
+    const pending = engine.run();
+    await waitFor(() => waits.length === 1);
+    expect(waits[0].delay).toBe(80);
+    waits[0].wake(99.75); // Deliberately wake before the clipped monotonic deadline.
+    await waitFor(() => waits.length === 2 || engine.snapshot().metrics.completed === 1);
+    expect(engine.snapshot().events.filter(e => e.type === 'RETRY_STARTED')).toHaveLength(0);
+    expect(engine.snapshot().events.filter(e => e.type === 'ATTEMPT_STARTED')).toHaveLength(1);
+    expect(engine.snapshot().metrics.completed).toBe(0);
+    waits[1].wake(100);
+    expect(await pending).toMatchObject({ outcome: 'failure', attempts: 1, reason: 'operation-deadline' });
+    captureWait = false;
+    expect((await metrics()).received).toBe(1);
+    expect(engine.snapshot().metrics).toMatchObject({ completed: 1, failed: 1, rollingCompleted: 1, rollingFailed: 1 });
+    expect(engine.snapshot().events.filter(e => e.type === 'REQUEST_FINISHED')).toHaveLength(1);
+    for (const wait of waits) expect(clearTimeout).toHaveBeenCalledWith(wait.timer);
+  });
+  it.each([
+    { name: 'full', backoffMs: 25, failedAt: 20.25, early: 44.75, wakeAt: 45.25, attempts: 2 },
+    { name: 'equal', backoffMs: 25, failedAt: 75, early: 99.75, wakeAt: 100, attempts: 1 },
+    { name: 'zero', backoffMs: 0, failedAt: 20.25, early: null, wakeAt: 20.25, attempts: 2 },
+  ])('$name backoff honors its full wait and remaining operation budget', async scenario => {
+    engine.configure({ backoffMs: scenario.backoffMs });
+    firstFailureAt = scenario.failedAt;
+    const pending = engine.run();
+    await waitFor(() => waits.length === 1);
+    expect(waits[0].delay).toBe(scenario.backoffMs);
+    if (scenario.early !== null) {
+      waits[0].wake(scenario.early);
+      await waitFor(() => waits.length === 2);
+      expect(engine.snapshot().events.filter(e => e.type === 'RETRY_STARTED')).toHaveLength(0);
+      expect(engine.snapshot().events.filter(e => e.type === 'ATTEMPT_STARTED')).toHaveLength(1);
+      expect(engine.snapshot().metrics.completed).toBe(0);
+    }
+    waits.at(-1)!.wake(scenario.wakeAt);
+    const result = await pending;
+    expect(result).toMatchObject({ outcome: 'failure', attempts: scenario.attempts,
+      reason: scenario.attempts === 1 ? 'operation-deadline' : 'HTTP 503' });
+    captureWait = false;
+    expect((await metrics()).received).toBe(scenario.attempts);
+    const events = engine.snapshot().events.filter(e => e.requestId === result.requestId);
+    expect(events.filter(e => e.type === 'RETRY_STARTED')).toHaveLength(scenario.attempts - 1);
+    expect(events.filter(e => e.type === 'ATTEMPT_STARTED')).toHaveLength(scenario.attempts);
+    expect(events.filter(e => e.type === 'RETRY_SCHEDULED')).toHaveLength(1);
+    expect(engine.snapshot().metrics).toMatchObject({ completed: 1, failed: 1, rollingCompleted: 1, rollingFailed: 1 });
+    for (const wait of waits) expect(clearTimeout).toHaveBeenCalledWith(wait.timer);
+  });
+  it('zero backoff cannot retry with an exhausted operation budget', async () => {
+    engine.configure({ backoffMs: 0 });
+    firstFailureAt = 100;
+    expect(await engine.run()).toMatchObject({ outcome: 'failure', attempts: 1, reason: 'operation-deadline' });
+    expect(waits).toHaveLength(0);
+    expect(engine.snapshot().events.filter(e => e.type.startsWith('RETRY_'))).toHaveLength(0);
+    expect((await metrics()).received).toBe(1);
+    expect(engine.snapshot().metrics).toMatchObject({ completed: 1, failed: 1, rollingCompleted: 1, rollingFailed: 1 });
+  });
+  it('shutdown cancels a pending wait without retry or extra HTTP and clears its timer', async () => {
+    const pending = engine.run();
+    await waitFor(() => waits.length === 1);
+    engine.shutdown();
+    expect(await pending).toMatchObject({ outcome: 'failure', attempts: 1, reason: 'engine-stopped' });
+    captureWait = false;
+    expect((await metrics()).received).toBe(1);
+    expect(engine.snapshot().events.filter(e => e.type === 'RETRY_STARTED')).toHaveLength(0);
+    expect(engine.snapshot().events.filter(e => e.type === 'ATTEMPT_STARTED')).toHaveLength(1);
+    expect(engine.snapshot().metrics).toMatchObject({ completed: 1, failed: 1, rollingCompleted: 1, rollingFailed: 1 });
+    expect(clearTimeout).toHaveBeenCalledWith(waits[0].timer);
   });
 });
 

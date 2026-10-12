@@ -192,18 +192,25 @@ export class Engine {
         if (!(error instanceof AttemptError) || !error.retryable || index > retries) throw error;
         const remaining = this.remaining(context);
         if (remaining <= 0) throw new AttemptError('operation-deadline', false);
-        const backoffMs = Math.min(this.policyValue.backoffMs * 2 ** (index - 1), remaining);
+        const configuredBackoffMs = this.policyValue.backoffMs * 2 ** (index - 1);
+        const retryFits = configuredBackoffMs < remaining;
+        const backoffMs = Math.min(configuredBackoffMs, remaining);
+        const waitUntil = context.monotonicDeadline - remaining + backoffMs;
         this.emit('RETRY_SCHEDULED', context, { index: index + 1, backoffMs, reason: error.message });
-        await new Promise<void>(resolve => {
-          const timer = setTimeout(() => {
-            clearTimeout(timer);
-            this.sleeps.delete(timer);
-            resolve();
-          }, Math.ceil(backoffMs));
-          this.sleeps.set(timer, resolve);
-        });
-        if (this.stopped) throw new AttemptError('engine-stopped', false);
-        if (this.remaining(context) <= 0) throw new AttemptError('operation-deadline', false);
+        // A timer wake is not proof that the monotonic wait has elapsed.
+        // A clipped wait reaches the deadline; it never authorizes a retry.
+        do {
+          await new Promise<void>(resolve => {
+            const timer = setTimeout(() => {
+              clearTimeout(timer);
+              this.sleeps.delete(timer);
+              resolve();
+            }, Math.max(0, Math.ceil(waitUntil - performance.now())));
+            this.sleeps.set(timer, resolve);
+          });
+          if (this.stopped) throw new AttemptError('engine-stopped', false);
+        } while (performance.now() < waitUntil);
+        if (!retryFits || this.remaining(context) <= 0) throw new AttemptError('operation-deadline', false);
         this.emit('RETRY_STARTED', context, { index: index + 1, backoffMs });
       }
     }
