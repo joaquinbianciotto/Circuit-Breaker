@@ -1,10 +1,16 @@
 # Operate the resilience instrument
 
-The frontend is a real React / TypeScript / Vite / Tailwind application. Its electrical schematic replays observed engine events; it never simulates HTTP results or changes real timers to make an animation look convincing. This source snapshot contains native development and local browser verification only.
+The frontend is a real React / TypeScript / Vite / Tailwind application. Its electrical schematic replays observed engine events; it never simulates HTTP results or changes real timers to make an animation look convincing. **T3 assembles the production three-container stack and records real proxy/browser self-checks; independent T4 review remains pending.**
 
 ## Quick path
 
-Follow the [native quickstart](../README.md), building all workspaces and starting upstream, backend and frontend in separate terminals.
+With Docker Compose installed (no host Node/npm required):
+
+```sh
+docker compose up --build
+```
+
+See the [README](../README.md#development-optional-host-toolchain) for optional native development commands.
 
 Open **http://localhost:3000**, select **Normal Response**, then **Send Request**. This sets a real 260 ms upstream latency so the attempt is visible. Requests and attempts retain their actual IDs in the schematic, event recorder, expandable histories and upstream logs.
 
@@ -59,7 +65,7 @@ Management controls are held while admitted work is active. The server remains t
 | `apps/frontend/src/Timeline.tsx` | Bounded live event inspection and expandable logical histories. |
 | `apps/frontend/src/styles.css` / `vite.config.ts` | Real Tailwind v4 Vite integration, graphite instrument styling, responsiveness and accessibility. |
 
-Vite proxies `/api` to **localhost:3001** by default. `LAB_API_PROXY` can select another local development backend; the native smoke check uses isolated ports 3100/3101/3102. The ESM `@resilience/contracts` workspace must be built before Vite imports it.
+Vite proxies `/api` to **localhost:3001** by default. `LAB_API_PROXY` can select another local development backend; the native smoke check uses isolated ports 3100/3101/3102. The production [nginx configuration](../apps/frontend/nginx.conf) supplies same-origin `/api` with unbuffered, uncached, uncompressed SSE and HTTP/1.1 upstream keepalive, rather than exposing a browser connection directly to an internal service. The ESM `@resilience/contracts` workspace must be built before Vite imports it.
 
 Native EventSource retains Last-Event-ID across its own reconnections. The frontend never reconstructs it manually or launches endless polling. It pulls snapshots at bootstrap, after mutations, on event gaps/completions/transitions and once on browser reconnect. Older sequence, older same-cursor timestamp, retired generation and stale fetch-ticket responses cannot replace newer state. Fresh snapshot metrics/config do not skip a slow visual queue. An incomplete tail or buffer overflow visibly announces resynchronization rather than silently inventing missing transitions.
 
@@ -85,16 +91,16 @@ node apps/frontend/verify/browser-smoke.mjs "$(npm root -g)/@playwright/cli/node
 # Otherwise pass the absolute path of an existing Playwright module; do not download one implicitly.
 ```
 
-This snapshot uses only the local-process mode; do not pass --docker. No deployment acceptance helper is included.
+To check the **existing production Docker stack** instead, append `--docker` to the same command. This mode uses http://localhost:3000, resets lab data, checks browser offline/online and generation replacement **without restarting containers**. Node `npm run verify:compose` separately checks Last-Event-ID replay through nginx. Production mode captures desktop, 1920×1080-viewport focus, reduced-motion and 390 px mobile screenshots as `docker-*.png`, then restores defaults and leaves containers running.
 
 Artifacts stay in ignored `apps/frontend/.verification/`. The check uses no mocked outcomes. It verifies real success, timeout/upstream cancellation, identified WAIT and feedback-path coordinates, four completed failures/OPEN, rejection without HTTP, paused-vs-live gate state, exclusive concurrent recovery probe, full Auto Demo, real policy PATCH, no-request hover, browser offline controls, native Last-Event-ID reconnect after an owned backend restart, generation replacement, focus/Escape, keyboard inspection, reduced motion and 390 px page containment.
 
-### Existing evidence and limits
+### Evidence and remaining checks
 
 - Initial reducer RED: 10 intended failures against inert scaffold exports. GREEN: all initial 11 tests passed after implementation.
 - Additional observed RED/GREEN: policy playback boundary and stale same-cursor snapshot rollback regressions. Expanded browser RED/GREEN caught browser offline leaving SSE apparently open; explicit offline/one-shot online verification fixes the misleading connected controls.
-- All workspace builds pass. Focused frontend validation passes **16 tests**; the full technical/frontend suite passes **76 tests**, including 60 corrected core tests. The final native browser script exits successfully and leaves no listeners on its isolated ports.
+- All workspace builds pass. Focused frontend validation passes **16 tests**; the full technical/frontend suite passes **70 tests**, including the original 54 core tests. The final native browser script exits successfully and leaves no listeners on its isolated ports.
 - Vitest upgraded from 3.2.7 to exact **5.0.3**, removing the confirmed tinypool/mocker advisories without overrides. Vite is pinned at patched **7.3.7**.
-- The locked toolchain removes the low Windows dev-only esbuild advisory **GHSA-g7r4-m6w7-qqqr** with a targeted compatible lock refresh to **0.28.2** (already permitted by Vite 7.3.7). Full and production-only audits now have zero findings. No force fix, overrides or major framework upgrade was used; npm audit is not an image/OS scan or security approval.
-- The unchanged final Focus layout is tested at 1366×768 and 1920×1080 by the local browser script, including font floors and clipping/collisions.
-- Chromium evidence does not imply a broad browser/device matrix, physical projector assessment, comprehensive accessibility audit or native review approval.
+- T3 removed the remaining low Windows dev-only esbuild advisory **GHSA-g7r4-m6w7-qqqr** with a targeted compatible lock refresh to **0.28.2** (already permitted by Vite 7.3.7). Full and production-only audits now have zero findings. No force fix, overrides or major framework upgrade was used; npm audit is not an image/OS scan or security approval.
+- T3 production self-checks pass Docker build/health, real HTTP/SSE through nginx and native Chromium controls/routes/reconnect/focus/reduced-motion/mobile. See [exact evidence and screenshots](verification.md).
+- **Pending T4:** independent full-flow verification/review, broader projector/device assessment and any bounded corrective work. T3 self-checks are not independent review approval; native-only historical evidence remains distinct from production Docker evidence.

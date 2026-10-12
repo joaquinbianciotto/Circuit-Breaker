@@ -2,16 +2,12 @@
   "name": "resilience-lab",
   "private": true,
   "version": "0.1.0",
-  "workspaces": [
-    "packages/*",
-    "apps/*"
-  ],
-  "engines": {
-    "node": ">=22.20 <23"
-  },
+  "workspaces": ["packages/*", "apps/*"],
+  "engines": { "node": ">=22.20 <23" },
   "scripts": {
     "build": "npm run build -w @resilience/contracts && npm run build -w @resilience/external-api && npm run build -w @resilience/backend && npm run build -w @resilience/frontend",
-    "test": "vitest run",
+    "test": "vitest run && node --test scripts/compose-output.test.mjs",
+    "verify:compose": "node scripts/verify-compose.mjs",
     "test:frontend": "vitest run apps/frontend/test",
     "dev:frontend": "npm run dev -w @resilience/frontend",
     "test:engine": "vitest run apps/backend/test/engine.test.ts",

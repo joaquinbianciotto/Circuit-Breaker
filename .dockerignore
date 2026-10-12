@@ -1,0 +1,16 @@
+**/node_modules
+**/dist
+**/coverage
+**/*.tsbuildinfo
+.git
+.codegraph
+**/.verification
+**/.playwright-cli
+**/.env
+**/.env.*
+**/test
+**/verify
+odd
+docs
+scripts
+README.md
