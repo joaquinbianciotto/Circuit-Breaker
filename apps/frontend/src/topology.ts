@@ -10,3 +10,15 @@ export const CONDUCTORS: Record<Exclude<Route, 'wait'>, string> = {
   reject: 'M256 300 V612 H974',
 };
 export const WAIT_POINT = { x: 614, y: 520 };
+// React commits and RAF share these exact static sockets in reduced motion.
+export const REDUCED_POSITION: Record<Route, { x: number; y: number }> = {
+  inlet: { x: 86, y: 300 }, http: { x: 800, y: 300 }, wait: WAIT_POINT,
+  retry: { x: 552, y: 300 }, success: { x: 974, y: 236 },
+  failure: { x: 974, y: 386 }, reject: { x: 974, y: 612 },
+};
+// Initial React paint must already occupy the observed stage's conductor.
+export const STAGE_ORIGIN: Record<Route, { x: number; y: number }> = {
+  inlet: { x: 86, y: 300 }, http: { x: 410, y: 300 },
+  wait: { x: 800, y: 300 }, retry: WAIT_POINT,
+  success: { x: 800, y: 300 }, failure: { x: 800, y: 300 }, reject: { x: 256, y: 300 },
+};

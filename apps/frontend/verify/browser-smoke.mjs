@@ -80,23 +80,104 @@ try {
   await page.goto(base);
   await page.waitForFunction(() => document.querySelector('[data-testid="connection-state"]')?.textContent.includes('CONNECTED'));
   const snapshot = () => page.evaluate(async () => (await fetch('/api/snapshot')).json());
-  const settle = () => page.waitForFunction(() => !document.querySelector('[data-testid="mutation-status"]')?.textContent.endsWith('…'));
-  const reset = async () => { await page.getByTestId('reset-simulation').click(); await settle(); };
+  const until = async predicate => {
+    const deadline = Date.now() + 30000;
+    while (Date.now() < deadline) {
+      if (await predicate()) return;
+      await page.waitForTimeout(30);
+    }
+    throw new Error('Timed out waiting for an authoritative API observation.');
+  };
+  const settle = () => until(async () => {
+    const held = await page.evaluate(() =>
+      document.querySelector('[data-testid="mutation-status"]')?.textContent.endsWith('…') ||
+      document.querySelector('.focus-controls .button')?.disabled ||
+      document.querySelector('[data-testid="send-request"]')?.disabled);
+    return !held && (await snapshot()).metrics.active === 0;
+  });
+  const reset = async () => {
+    const epoch = (await snapshot()).epoch;
+    await page.getByTestId('reset-simulation').click();
+    await until(async () => (await snapshot()).epoch !== epoch);
+    await settle();
+  };
+  const completed = (before, amount) => until(async () => {
+    const added = (await snapshot()).histories.filter(history => !before.includes(history.requestId));
+    return added.length === amount && added.every(history => history.finishedAt !== undefined && history.outcome);
+  });
+  const send = async (amount = 1, focus = false) => {
+    const before = (await snapshot()).histories.map(history => history.requestId);
+    await (focus ? page.getByRole('button', { name: 'Send Request', exact: true })
+      : page.getByTestId(amount === 1 ? 'send-request' : 'send-batch')).click();
+    await completed(before, amount);
+    await settle();
+  };
+  // Collect painted coordinates BEFORE sends; post-response DOM inspection misses fast starts.
+  await page.evaluate(() => {
+    window.journeyFrames = [];
+    const collect = () => {
+      for (const signal of document.querySelectorAll('[data-testid="signal"]')) {
+        const head = signal.querySelector('circle');
+        window.journeyFrames.push({ id: signal.dataset.requestId, route: signal.dataset.route,
+          attempt: signal.dataset.attemptId, x: Number(head.getAttribute('cx')), y: Number(head.getAttribute('cy')) });
+      }
+      requestAnimationFrame(collect);
+    };
+    requestAnimationFrame(collect);
+  });
+  const assertJourneys = async (histories) => {
+    await page.waitForFunction(ids => ids.every(id => window.journeyFrames.some(frame =>
+      frame.id === id && ['success', 'failure', 'reject'].includes(frame.route) && frame.x >= 973)),
+      histories.map(history => history.requestId), { timeout: 15000 });
+    const frames = await page.evaluate(() => window.journeyFrames);
+    for (const history of histories) {
+      const samples = frames.filter(frame => frame.id === history.requestId);
+      assert.equal(samples[0].route, 'inlet', `${history.requestId} must start at REQUEST IN`);
+      assert(samples.some(frame => frame.route === 'inlet' && frame.x === 86 && frame.y === 300));
+      const routes = samples.map(frame => frame.route).filter((route, index, all) => index === 0 || route !== all[index - 1]);
+      const outcome = history.outcome === 'rejected' ? 'reject' : history.outcome;
+      assert.equal(routes.at(-1), outcome);
+      if (outcome === 'reject') {
+        assert.deepEqual(routes, ['inlet', 'reject']);
+        assert(samples.some(frame => frame.route === 'reject' && frame.x >= 973 && frame.y === 612));
+      } else {
+        assert.equal(routes[1], 'http');
+        assert(samples.some(frame => frame.route === 'http' && frame.x >= 410 && frame.x <= 800 && frame.y >= 282 && frame.y <= 318));
+        assert(samples.some(frame => frame.route === outcome && frame.x >= 973 && frame.y === (outcome === 'success' ? 236 : 386)));
+        assert.equal(routes.filter(route => route === 'inlet').length, 1, 'Retries never re-enter admission');
+        for (const attempt of history.attempts) assert(samples.some(frame => frame.route === 'http' && frame.attempt === attempt.attemptId));
+      }
+    }
+  };
+  assert.equal(await page.locator('[data-testid="playback-speed"], [data-testid="pause-playback"], [data-testid="live-catch-up"], [data-testid="inspect-meter"], .meter-rim').count(), 0);
+  assert(!(await page.getByTestId('machine').textContent()).includes('LIVE BACKEND ROLLING LEDGER'));
   await page.getByRole('button', { name: 'Normal Response', exact: false }).click();
   await settle();
-  await page.getByTestId('playback-speed').selectOption('0.25');
-  await page.getByTestId('send-request').click();
-  await settle();
-  assert.equal((await snapshot()).histories.at(-1).outcome, 'success');
-  await page.waitForFunction(() => document.querySelector('[data-testid="signal"][data-route="success"]'));
-  results.push('Real normal request succeeds; quarter-speed playback reaches the observed success terminal.');
+  await send();
+  const normal = (await snapshot()).histories.at(-1);
+  assert.equal(normal.outcome, 'success');
+  await assertJourneys([normal]);
+  results.push('Real success paints REQUEST IN, HTTP and the success socket in order.');
+  await reset();
+  // Reset restores genuine zero-latency defaults; no visibility latency is added.
+  await send();
+  const zero = (await snapshot()).histories.at(-1);
+  assert.equal((await snapshot()).external.config.latencyMs, 0);
+  await assertJourneys([zero]);
+  await reset();
+  await page.getByTestId('batch-count').fill('10');
+  await send(10);
+  const batch = (await snapshot()).histories;
+  assert.equal(batch.length, 10);
+  assert(batch.every(history => history.outcome === 'success'));
+  await assertJourneys(batch);
+  results.push('Zero-latency single and all ten completed batch IDs paint inlet, HTTP and terminal before trimming.');
   await page.screenshot({ path: screenshot('desktop'), fullPage: true });
 
   await reset();
-  await page.getByTestId('live-catch-up').click();
-  await page.getByTestId('playback-speed').selectOption('0.25');
   await page.getByRole('button', { name: 'Intermittent Failure', exact: false }).click();
   await settle();
+  const retryBefore = (await snapshot()).histories.map(history => history.requestId);
   await page.getByTestId('send-request').click();
   await page.waitForFunction(() => {
     const signal = document.querySelector('[data-testid="signal"][data-route="wait"][data-phase="1.000"]');
@@ -118,53 +199,48 @@ try {
     }
     return closest < 3;
   });
+  await completed(retryBefore, 1);
   await settle();
   const retried = await snapshot();
   assert.equal(retried.histories.at(-1).attempts.length, 2);
   assert.equal(new Set(retried.external.metrics.logs.map(log => log.requestId)).size, 1);
   results.push('An identified retry parks at WAIT and returns along the actual SVG feedback conductor; HTTP logs keep one logical ID.');
-  await page.getByTestId('live-catch-up').click();
-
-  await page.getByTestId('playback-speed').selectOption('0.25');
+  await assertJourneys([retried.histories.at(-1)]);
   await page.getByRole('button', { name: 'Slow Response', exact: false }).click();
   await settle();
-  await page.getByTestId('send-request').click();
-  await settle();
+  await send();
   const slow = await snapshot();
   assert(slow.events.some(event => event.type === 'ATTEMPT_TIMEOUT'));
   assert(slow.external.metrics.cancelled > 0);
   assert.equal(slow.policy.attemptTimeoutMs, 800);
   assert(slow.histories.at(-1).attempts.every(attempt =>
     attempt.finishedAt - attempt.startedAt >= 700 && attempt.finishedAt - attempt.startedAt <= 850));
-  results.push('Quarter-speed visuals leave real 800ms timeouts unchanged; upstream records actual abort/cancellation.');
+  results.push('Minimum visible stages leave real 800ms timeouts unchanged; upstream records actual abort/cancellation.');
 
   await reset();
-  await page.getByTestId('pause-playback').click();
+  await page.getByTestId('batch-count').fill('4');
   await page.getByRole('button', { name: 'Always Fail', exact: false }).click();
   await settle();
-  await page.getByTestId('send-batch').click();
-  await settle();
+  await send(4);
   const opened = await snapshot();
   assert.equal(opened.state, 'OPEN');
   assert.equal(opened.metrics.rollingCompleted, 4);
-  assert.equal(await page.getByTestId('machine').getAttribute('data-state'), 'CLOSED');
+  assert.equal(await page.getByTestId('machine').getAttribute('data-state'), 'OPEN');
   assert((await page.getByTestId('live-state').textContent()).includes('OPEN'));
-  assert((await page.getByTestId('playback-mode').textContent()).includes('PAUSED'));
+  await assertJourneys(opened.histories);
   const received = opened.external.metrics.received;
-  await page.getByTestId('send-request').click();
-  await settle();
+  await send();
   const rejected = await snapshot();
   assert.equal(rejected.histories.at(-1).outcome, 'rejected');
   assert.equal(rejected.external.metrics.received, received);
-  results.push('Paused figure remains historical CLOSED while LIVE is OPEN; OPEN rejection creates no HTTP.');
-  await page.getByTestId('live-catch-up').click();
+  await assertJourneys([rejected.histories.at(-1)]);
+  results.push('Gate stays live OPEN; rejected request paints inlet then shunt without HTTP.');
   await page.waitForFunction(() => document.querySelector('[data-testid="machine"]')?.getAttribute('data-state') === 'OPEN');
   assert(await page.locator('[data-testid="signal"][data-route="reject"]').count());
   await page.waitForFunction(() => document.querySelector('[data-testid="live-state"]')?.textContent.includes('HALF_OPEN'), null, { timeout: 12000 });
   await page.getByTestId('recover-service').click();
   await settle();
-  await page.getByTestId('send-batch').click();
-  await settle();
+  await send(4);
   const recovered = await snapshot();
   assert.equal(recovered.state, 'CLOSED');
   assert.equal(recovered.histories.filter(history => history.probe && history.outcome === 'success').length, 1);
@@ -192,8 +268,7 @@ try {
   await editor.getByRole('button', { name: 'Apply External Configuration', exact: true }).click();
   await settle();
   assert.equal((await snapshot()).external.config.errorStatus, 422);
-  await page.getByTestId('send-request').click();
-  await settle();
+  await send();
   const clientError = (await snapshot()).histories.at(-1);
   assert.equal(clientError.outcome, 'failure');
   assert.equal(clientError.attempts.length, 1);
@@ -251,7 +326,7 @@ try {
           return { text: element.textContent, major: element.matches('.svg-label, .state-value'),
             font: parseFloat(getComputedStyle(element).fontSize) * Math.hypot(matrix.a, matrix.b), ...box(element) };
         });
-      const components = [...svg.querySelectorAll('.dial-rim, .contact-lever, .http-winding, .capacitor, .meter-rim, .reject-symbol, .socket')]
+      const components = [...svg.querySelectorAll('.dial-rim, .contact-lever, .http-winding, .capacitor, .reject-symbol, .socket')]
         .map(element => ({ name: element.getAttribute('class'), ...box(element) }));
       const overlaps = (a, b) => Math.min(a.right, b.right) - Math.max(a.x, b.x) > 1
         && Math.min(a.bottom, b.bottom) - Math.max(a.y, b.y) > 1;
@@ -283,6 +358,9 @@ try {
     await page.screenshot({ path: screenshot(`projector-${width}`), fullPage: false });
   }
   await page.screenshot({ path: screenshot('focus'), fullPage: true });
+  await send(1, true);
+  await assertJourneys([(await snapshot()).histories.at(-1)]);
+  results.push('Focus View preserves a complete per-request inlet/HTTP/terminal journey.');
   await page.keyboard.press('Escape');
   assert(await page.locator('.dock').count());
   assert(await page.getByTestId('focus-toggle').evaluate(element => element === document.activeElement));
@@ -293,25 +371,51 @@ try {
   await page.waitForFunction(() => document.querySelector('[data-testid="machine"]')?.getAttribute('data-reduced-motion') === 'true');
   await page.getByRole('button', { name: 'Slow Response', exact: false }).click();
   await settle();
+  const reducedBefore = (await snapshot()).histories.map(history => history.requestId);
   await page.getByTestId('send-request').click();
-  await page.waitForFunction(() => {
-    const signal = document.querySelector('[data-testid="signal"][data-route="http"]');
-    const head = signal?.querySelector('circle');
-    return head?.getAttribute('cx') === '800' && head.getAttribute('cy') === '300';
-  });
-  const reducedPosition = () => page.locator('[data-testid="signal"][data-route="http"]').first().evaluate(signal => {
+  const identified = await page.waitForFunction(before => {
+    const signal = [...document.querySelectorAll('[data-testid="signal"]')].find(signal =>
+      !before.includes(signal.dataset.requestId) && signal.dataset.route === 'http' && signal.dataset.attemptId);
+    return signal ? { id: signal.dataset.requestId, attempt: signal.dataset.attemptId } : false;
+  }, reducedBefore);
+  const { id: reducedId, attempt: reducedAttempt } = await identified.jsonValue();
+  await identified.dispose();
+  assert(!reducedBefore.includes(reducedId), 'Reduced checks must exercise the newly sent request');
+  const reducedSignal = page.locator(`[data-testid="signal"][data-request-id="${reducedId}"]`);
+  const reducedPosition = () => reducedSignal.evaluate(signal => {
     const circles = [...signal.querySelectorAll('circle')];
-    return { x: circles[0].getAttribute('cx'), y: circles[0].getAttribute('cy'),
-      trails: circles.slice(1).map(circle => getComputedStyle(circle).opacity) };
+    const label = signal.querySelector('text');
+    return { route: signal.dataset.route, attempt: signal.dataset.attemptId,
+      x: circles[0].getAttribute('cx'), y: circles[0].getAttribute('cy'),
+      labelX: label.getAttribute('x'), labelY: label.getAttribute('y'),
+      lane: Number(signal.dataset.lane), trails: circles.slice(1).map(circle => getComputedStyle(circle).opacity) };
   });
+  const assertReducedPoint = (position, route, x, y) => {
+    assert.equal(position.route, route);
+    assert.equal(position.x, String(x));
+    assert.equal(position.y, String(y));
+    assert.equal(position.labelX, String(x));
+    assert.equal(position.labelY, String(y - 16 - (position.lane % 10) * 15));
+    assert.deepEqual(position.trails, ['0', '0', '0']);
+  };
   const staticHead = await reducedPosition();
+  assertReducedPoint(staticHead, 'http', 800, 300);
+  assert.equal(staticHead.attempt, reducedAttempt);
   await page.waitForTimeout(100);
-  assert.deepEqual(await reducedPosition(), staticHead);
-  assert.deepEqual(staticHead, { x: '800', y: '300', trails: ['0', '0', '0'] });
+  assert.deepEqual(await reducedPosition(), staticHead, 'The same new request and attempt must remain static HTTP');
   await page.screenshot({ path: screenshot('reduced-motion'), fullPage: true });
+  for (const [route, x, y] of [['wait', 614, 520], ['retry', 552, 300]]) {
+    await page.waitForFunction(({ id, route }) => [...document.querySelectorAll('[data-testid="signal"]')]
+      .some(signal => signal.dataset.requestId === id && signal.dataset.route === route), { id: reducedId, route });
+    assertReducedPoint(await reducedPosition(), route, x, y);
+  }
+  await completed(reducedBefore, 1);
   await settle();
+  const reducedHistory = (await snapshot()).histories.find(history => history.requestId === reducedId);
+  assert(reducedHistory);
+  await assertJourneys([reducedHistory]);
   await reset();
-  results.push('Reduced-motion HTTP marker stays at (800,300) for 100ms with all trails invisible.');
+  results.push('New reduced request keeps the same HTTP attempt at (800,300) for 100ms; WAIT (614,520) and retry (552,300) have aligned labels and zero trails.');
   await page.setViewportSize({ width: 390, height: 844 });
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.screenshot({ path: screenshot('mobile'), fullPage: true });

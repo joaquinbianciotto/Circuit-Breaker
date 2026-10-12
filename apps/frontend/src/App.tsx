@@ -21,8 +21,6 @@ export function App() {
   const actionLock = useRef(false);
   const mounted = useRef(true);
   const focusButton = useRef<HTMLButtonElement>(null);
-  const lag = useRef<HTMLSpanElement>(null);
-  const mode = useRef<HTMLSpanElement>(null);
   const observedAt = useRef<HTMLSpanElement>(null);
   const live = lab.store.live;
   const view = lab.store.view;
@@ -39,14 +37,10 @@ export function App() {
     document.addEventListener('keydown', escape);
     return () => document.removeEventListener('keydown', escape);
   }, [focus]);
-  useEffect(() => lab.subscribe((store, target) => {
-    const delay = Math.max(0, target - store.clock);
-    if (lag.current) lag.current.textContent = `lag ${(delay / 1000).toFixed(1)} s`;
-    if (mode.current) mode.current.textContent = lab.paused ? 'PAUSED / HISTORICAL'
-      : delay > 200 || lab.speed !== 1 ? `PLAYBACK ${lab.speed}× / HISTORICAL` : 'LIVE / OBSERVED REPLAY';
+  useEffect(() => lab.subscribe(store => {
     if (observedAt.current && store.live) observedAt.current.textContent =
       `backend sample ${new Date(store.live.serverTime).toLocaleTimeString('en-GB')}`;
-  }), [lab.subscribe, lab.speed, lab.paused]);
+  }), [lab.subscribe]);
 
   async function perform(label: string, action: () => Promise<void>) {
     if (actionLock.current) throw new Error('A control action is already pending.');
@@ -107,15 +101,6 @@ export function App() {
       });
   };
 
-  const playback = <div className="playback-controls" aria-label="Visual playback controls">
-    <label htmlFor="playback-speed" className="sr-only">Visual playback speed</label>
-    <select id="playback-speed" data-testid="playback-speed" value={lab.speed} onChange={event => lab.setSpeed(Number(event.target.value))}>
-      <option value={1}>1× playback</option><option value={0.5}>0.5× playback</option><option value={0.25}>0.25× playback</option>
-    </select>
-    <button className="tool-button" data-testid="pause-playback" aria-pressed={lab.paused} onClick={() => lab.setPaused(!lab.paused)}>{lab.paused ? 'Resume' : 'Pause'}</button>
-    <button className="tool-button" data-testid="live-catch-up" onClick={lab.catchUp}>Live catch-up</button>
-  </div>;
-
   return <main className={`lab-shell ${focus ? 'focus-mode' : ''}`}>
     <header className="masthead">
       <a className="brand" href="#instrument" aria-label="Resilience Lab instrument"><span className="brand-mark" aria-hidden="true">R<span>↯</span></span><span>RESILIENCE<span className="brand-light"> LAB</span></span></a>
@@ -129,12 +114,11 @@ export function App() {
     <section id="instrument" className="instrument-layout" aria-label="Protection lab">
       <div className="figure-column">
         <div className="figure-toolbar">
-          <div className="playback-readout"><span ref={mode} className="eyebrow" data-testid="playback-mode">LIVE / OBSERVED REPLAY</span><span ref={lag} className="mono text-muted" data-testid="playback-lag">lag 0.0 s</span></div>
-          {!focus && playback}
+          <div className="live-readout"><span className="eyebrow">LIVE / OBSERVED JOURNEYS</span></div>
           <button ref={focusButton} className="tool-button focus-button" data-testid="focus-toggle" aria-pressed={focus}
             onClick={() => setFocus(!focus)}>{focus ? 'Exit Focus' : 'Focus View'} <span aria-hidden="true">{focus ? '↙' : '↗'}</span></button>
         </div>
-        {view && live ? <Machine snapshot={view} live={live} focus={focus} selected={selected} inspect={inspect} onInspect={setInspect} onSelect={setSelected} subscribe={lab.subscribe} />
+        {view && live ? <Machine snapshot={view} journeys={lab.store.journeys} focus={focus} selected={selected} inspect={inspect} onInspect={setInspect} onSelect={setSelected} subscribe={lab.subscribe} onVisibility={lab.setVisible} />
           : <div className="machine-loading"><span className="eyebrow">FIG. 01 / STANDBY</span><h2>Connecting the instrument.</h2><p>Start the backend and upstream services. No synthetic requests are displayed.</p><button className="button" onClick={() => { void lab.refresh().catch(error => lab.setError(error.message)); }}>Retry Snapshot</button></div>}
         <div className="figure-footer">
           <div className="legend" aria-label="Signal legend"><span><i className="dot cyan" />Conducting</span><span><i className="dot green" />Success</span><span><i className="dot amber" />Retry / probe</span><span><i className="dot red" />Failure / reject</span></div>
@@ -145,7 +129,7 @@ export function App() {
           <div><h2>{PARTS[inspect].title.slice(5)}</h2><p>{PARTS[inspect].text}</p></div>
           <div className="inspection-hint mono">HOVER / SELECT<br />TAB TO INSPECT</div>
         </div>
-        <div className="observation-note"><span>Motion replays observed events. Slowing or pausing it never changes backend timers.</span><span ref={observedAt} className="mono">backend sample —</span></div>
+        <div className="observation-note"><span>Live observations stay current. Minimum visible stages never change real HTTP timing.</span><span ref={observedAt} className="mono">backend sample —</span></div>
       </div>
       {!focus && live && <Dock snapshot={live} connected={lab.connected} pending={pending} message={message}
         count={count} onCount={setCount} demo={demo} demoStage={demoStage} actions={{
@@ -158,7 +142,7 @@ export function App() {
       <button className="button button-primary" disabled={!lab.connected || !!pending || demo} onClick={() => manual(() => send(1))}>Send Request</button>
       <label className="sr-only" htmlFor="focus-count">Focus batch count</label>
       <input id="focus-count" type="number" min={1} max={10} step={1} value={count} onChange={event => setCount(Math.min(10, Math.max(1, Number(event.target.value) || 1)))} />
-      <button className="button" disabled={!lab.connected || !!pending || demo} onClick={() => manual(() => send(count))}>Send Batch</button>{playback}
+      <button className="button" disabled={!lab.connected || !!pending || demo} onClick={() => manual(() => send(count))}>Send Batch</button>
       {demo && <button className="button stop-button" onClick={toggleDemo}>Stop Demo</button>}
     </div>}
     {lab.error && <p className="global-error" data-testid="api-error">{lab.error}</p>}

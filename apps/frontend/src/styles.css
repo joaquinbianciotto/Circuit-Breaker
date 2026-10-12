@@ -62,14 +62,12 @@ h1, h2, h3, p { margin: 0; }
 .instrument-layout { display: grid; grid-template-columns: minmax(0, 1fr) 308px; gap: 24px; align-items: start; }
 .figure-column { min-width: 0; }
 .figure-toolbar { min-height: 46px; display: flex; align-items: center; gap: 12px; padding-bottom: 12px; }
-.playback-readout { display: flex; flex-wrap: wrap; gap: 6px 13px; margin-right: auto; align-items: center; }
-.playback-readout .eyebrow { color: var(--cyan); font-size: 10px; }
-.playback-readout .mono { font-size: 10px; }
-.playback-controls { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.live-readout { display: flex; margin-right: auto; align-items: center; }
+.live-readout .eyebrow { color: var(--cyan); font-size: 10px; }
 .tool-button { color: var(--muted); border: 1px solid transparent; border-radius: 5px; background: transparent; font-size: 11px; padding: 7px 8px; white-space: nowrap; }
 .tool-button:hover { background: #23313a; color: var(--ink); }
 .tool-button[aria-pressed="true"] { color: var(--amber); border-color: #615441; }
-.playback-controls select, .record-filter select { background: transparent; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); padding: 6px 8px; font: 11px var(--font-mono); }
+.record-filter select { background: transparent; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); padding: 6px 8px; font: 11px var(--font-mono); }
 select option { background: var(--surface); }
 .focus-button { border-color: var(--line); color: var(--ink); }
 .machine { display: block; width: 100%; height: auto; overflow: visible; }
@@ -122,9 +120,6 @@ select option { background: var(--surface); }
 .timeout-stop .http-winding { stroke: var(--red); animation: timeout-stop .4s ease 1; }
 .capacitor { fill: none; stroke: var(--amber); stroke-width: 5; }
 .feedback-direction { fill: none; stroke: var(--amber); stroke-width: 2; }
-.meter-rim { fill: none; stroke: #3b4c59; stroke-width: 5; }
-.meter-scale { fill: none; stroke: #a1abb1; stroke-width: 7; }
-.meter-needle { stroke: var(--amber); stroke-width: 2; }
 .reject-symbol { fill: none; stroke: var(--red); stroke-width: 2; }
 .signals { pointer-events: none; }
 .signal-id { font: 14px var(--font-mono); fill: currentColor; text-anchor: middle; paint-order: stroke; stroke: #151f28; stroke-width: 4; stroke-linejoin: round; }
@@ -240,12 +235,10 @@ td { padding: 11px 9px; border-bottom: 1px solid #24303a; vertical-align: top; }
 .focus-mode .figure-toolbar { min-height: 40px; padding-bottom: 8px; }
 .focus-mode .figure-footer { padding: 8px 0; }
 .focus-mode .tool-button, .focus-mode .focus-controls .button,
-.focus-mode .focus-controls input, .focus-mode .playback-controls select,
-.focus-mode .playback-readout .eyebrow, .focus-mode .playback-readout .mono,
+.focus-mode .focus-controls input, .focus-mode .live-readout .eyebrow,
 .focus-mode .legend, .focus-mode .live-state, .focus-mode .connection-label { font-size: 13px; }
 .focus-controls { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 9px; padding: 12px; border-top: 1px solid var(--line); }
 .focus-controls input { width: 48px; }
-.focus-controls .playback-controls { margin-left: 15px; }
 @keyframes timeout-stop { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 
 @media (min-width: 1550px) {
@@ -260,7 +253,7 @@ td { padding: 11px 9px; border-bottom: 1px solid #24303a; vertical-align: top; }
   .instrument-layout { grid-template-columns: minmax(0, 1fr) 282px; gap: 18px; }
   .dock { padding-inline: 14px; }
   .figure-toolbar { flex-wrap: wrap; }
-  .playback-readout { flex-basis: 100%; }
+  .live-readout { flex-basis: 100%; }
   .focus-button { margin-left: auto; }
   .dock { margin-top: 78px; }
   .inspection-hint { display: none; }
@@ -274,7 +267,7 @@ td { padding: 11px 9px; border-bottom: 1px solid #24303a; vertical-align: top; }
   .dock-heading, .dock-notice, .error-message { grid-column: 1 / -1; }
   .dock-section:nth-last-of-type(2) { border-bottom: 0; }
   .figure-toolbar { flex-wrap: nowrap; }
-  .playback-readout { flex-basis: auto; }
+  .live-readout { flex-basis: auto; }
   .page-intro { padding-top: 30px; }
   .intro-spec { display: none; }
   .focus-mode .figure-column { max-width: 100%; }
@@ -289,7 +282,7 @@ td { padding: 11px 9px; border-bottom: 1px solid #24303a; vertical-align: top; }
   .page-intro h1 { font-size: 28px; }
   .page-intro p { font-size: 12px; line-height: 1.7; }
   .figure-toolbar { flex-wrap: wrap; }
-  .playback-readout { flex-basis: 100%; }
+  .live-readout { flex-basis: 100%; }
   .figure-column { overflow: auto; }
   .machine { width: 820px; max-width: none; }
   .figure-column::after { content: 'On narrow screens, scroll the circuit horizontally to inspect each terminal.'; display: block; color: var(--subtle); font-size: 10px; padding: 0 0 12px; line-height: 1.7; }
@@ -310,7 +303,6 @@ td { padding: 11px 9px; border-bottom: 1px solid #24303a; vertical-align: top; }
   .focus-mode { padding-inline: 12px; }
   .focus-mode .figure-column { max-width: 100%; }
   .focus-controls { justify-content: flex-start; }
-  .focus-controls .playback-controls { margin-left: 0; }
   .focus-controls .button { font-size: 11px; }
 }
 @media (prefers-reduced-motion: reduce) {

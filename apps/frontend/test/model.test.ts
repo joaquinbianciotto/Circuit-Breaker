@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_POLICY, type EngineEvent, type Snapshot } from '@resilience/contracts';
-import {
-  createStore, acceptSnapshot, ingest, advance, liveCatchUp, snapshotTicket,
-  attemptTimer, recoveryTimer, signalRoute,
-} from '../src/model';
+import { createStore, acceptSnapshot, ingest, advance, snapshotTicket, attemptTimer, recoveryTimer } from '../src/model';
 
 const snapshot = (overrides: Partial<Snapshot> = {}): Snapshot => ({
   kind: 'snapshot', epoch: 'a', cursor: 'a:0', serverTime: 1000,
@@ -13,134 +10,168 @@ const snapshot = (overrides: Partial<Snapshot> = {}): Snapshot => ({
   histories: [], events: [], external: null, externalObservedAt: null, ...overrides,
 });
 const event = (sequence: number, type: EngineEvent['type'], fields: Partial<EngineEvent> = {}): EngineEvent => ({
-  id: `a:${sequence}`, epoch: 'a', sequence, type, timestamp: 1000 + sequence * 10,
+  id: `a:${sequence}`, epoch: 'a', sequence, type, timestamp: 1000,
   state: 'CLOSED', requestId: 'req-1', ...fields,
 });
 const boot = () => acceptSnapshot(createStore(), snapshot(), 'initial');
+const route = (store: ReturnType<typeof boot>, id = 'req-1') =>
+  store.journeys.find(item => item.history.requestId === id)?.stages[0].route;
+const frame = (store: ReturnType<typeof boot>, dt = 1000) => advance(store, dt, 9000);
+function success(store: ReturnType<typeof boot>, id: string, sequence: number) {
+  for (const item of [event(sequence, 'REQUEST_STARTED', { requestId: id }),
+    event(sequence + 1, 'ATTEMPT_STARTED', { requestId: id, attemptId: `${id}:1`, index: 1 }),
+    event(sequence + 2, 'ATTEMPT_SUCCEEDED', { requestId: id, attemptId: `${id}:1` }),
+    event(sequence + 3, 'REQUEST_FINISHED', { requestId: id, reason: 'success' })]) store = ingest(store, item);
+  return store;
+}
 
-// This reducer is the boundary between actual outcomes and educational replay.
-describe('authoritative ingestion', () => {
-  it('buffers out-of-order events, drains in sequence, and deduplicates', () => {
+describe('always-live authoritative observations', () => {
+  it('buffers out-of-order events, drains in sequence, and deduplicates journeys', () => {
     let store = ingest(boot(), event(2, 'ATTEMPT_STARTED', { attemptId: 'req-1:1', index: 1 }));
     expect(store.sequence).toBe(0);
     expect(store.gap).toBe(true);
-    store = ingest(store, event(1, 'REQUEST_STARTED', { deadlineAt: 4000 }));
+    store = ingest(store, event(1, 'REQUEST_STARTED'));
     expect(store.sequence).toBe(2);
     expect(store.live?.histories[0].attempts).toHaveLength(1);
+    expect(store.journeys[0].stages.map(stage => stage.route)).toEqual(['inlet', 'http']);
     expect(ingest(store, event(2, 'ATTEMPT_STARTED'))).toBe(store);
   });
-  it('replaces on reset and never revives a retired epoch', () => {
-    let store = ingest(boot(), event(1, 'REQUEST_STARTED'));
-    store = acceptSnapshot(store, snapshot({ epoch: 'b', cursor: 'b:2' }), 'reset');
-    expect(store.queue).toHaveLength(0);
-    expect(store.live?.histories).toHaveLength(0);
-    expect(ingest(store, event(3, 'REQUEST_STARTED'))).toBe(store);
-    expect(acceptSnapshot(store, snapshot(), 'initial')).toBe(store);
-  });
-  it('rejects stale REST snapshots after live events and generation changes', () => {
+  it('rejects stale REST snapshots, same-cursor timestamps and generation tickets', () => {
     let store = boot();
     const ticket = snapshotTicket(store);
     store = ingest(store, event(1, 'CIRCUIT_OPENED', { state: 'OPEN', requestId: null }));
+    expect(store.view).toBe(store.live);
     expect(acceptSnapshot(store, snapshot(), 'refresh', ticket)).toBe(store);
-    store = acceptSnapshot(store, snapshot({ epoch: 'b', cursor: 'b:4' }), 'reset');
+    store = acceptSnapshot(store, snapshot({ cursor: 'a:1', serverTime: 1200 }), 'refresh');
+    expect(acceptSnapshot(store, snapshot({ cursor: 'a:1', serverTime: 1100 }), 'refresh')).toBe(store);
+    store = acceptSnapshot(store, snapshot({ epoch: 'b', cursor: 'b:0' }), 'reset');
     expect(acceptSnapshot(store, snapshot({ cursor: 'a:9' }), 'refresh', ticket)).toBe(store);
   });
-  it('rejects an older same-cursor observation instead of rolling back live configuration', () => {
-    const current = acceptSnapshot(boot(), snapshot({ serverTime: 1200,
-      policy: { ...DEFAULT_POLICY, attemptTimeoutMs: 1000 } }), 'refresh');
-    expect(acceptSnapshot(current, snapshot({ serverTime: 1100 }), 'refresh')).toBe(current);
+  it('refresh and reconnect catch-up preserve unpainted journeys, even across an incomplete tail', () => {
+    let store = success(boot(), 'req-1', 1);
+    const authoritative = store.live!;
+    store = acceptSnapshot(store, { ...authoritative, serverTime: 1100 }, 'refresh');
+    expect(route(store)).toBe('inlet');
+    store = acceptSnapshot(store, { ...authoritative, cursor: 'a:10', serverTime: 1200, events: [] }, 'expired');
+    expect(store.sequence).toBe(10);
+    expect(route(store)).toBe('inlet');
+    expect(store.view).toBe(store.live);
+    expect(route(frame(store))).toBe('http');
+    expect(route(frame(frame(store)))).toBe('success');
   });
-  it('fresh metrics do not skip a slow visual queue', () => {
-    let store = ingest(boot(), event(1, 'CIRCUIT_OPENED', { state: 'OPEN', requestId: null }));
-    store = acceptSnapshot(store, snapshot({ cursor: 'a:1', state: 'OPEN', serverTime: 1050 }), 'refresh');
-    expect(store.live?.state).toBe('OPEN');
-    expect(store.view?.state).toBe('CLOSED');
-    expect(store.queue).toHaveLength(1);
-  });
-  it('uses a snapshot tail to bridge a gap without inventing request starts', () => {
-    const store = acceptSnapshot(boot(), snapshot({ cursor: 'a:2',
-      events: [event(1, 'REQUEST_STARTED'), event(2, 'ATTEMPT_STARTED', { index: 1, attemptId: 'req-1:1' })],
-    }), 'expired');
+  it('uses an ordered snapshot tail without inventing engine events', () => {
+    const store = acceptSnapshot(boot(), snapshot({ cursor: 'a:2', events: [event(1, 'REQUEST_STARTED'),
+      event(2, 'ATTEMPT_STARTED', { index: 1, attemptId: 'req-1:1' })],
+      histories: [{ requestId: 'req-1', startedAt: 1000, deadlineAt: 4000, probe: false,
+        attempts: [{ attemptId: 'req-1:1', index: 1, startedAt: 1000 }] }] }), 'expired');
     expect(store.sequence).toBe(2);
-    expect(store.queue.map(item => item.type)).toEqual(['REQUEST_STARTED', 'ATTEMPT_STARTED']);
-    const missing = acceptSnapshot(store, snapshot({ cursor: 'a:10', events: [] }), 'expired');
-    expect(missing.queue).toHaveLength(0);
-    expect(missing.notice).toContain('resynchronized');
+    expect(route(store)).toBe('inlet');
+    expect(store.live?.events).toHaveLength(2);
   });
-  it('bounds event ingestion and rejects unknown generation events until snapshot', () => {
-    let store = boot();
-    for (let i = 1; i <= 1200; i++) store = ingest(store, event(i, 'CIRCUIT_CLOSED', { requestId: null }));
+  it('reset fences old generations and discards only their journeys', () => {
+    let store = success(boot(), 'req-1', 1);
+    store = acceptSnapshot(store, snapshot({ epoch: 'b', cursor: 'b:0' }), 'reset');
+    expect(store.journeys).toHaveLength(0);
+    expect(ingest(store, event(5, 'REQUEST_STARTED'))).toBe(store);
+    expect(acceptSnapshot(store, snapshot(), 'initial')).toBe(store);
+    store = ingest(store, event(1, 'REQUEST_STARTED', { epoch: 'b', id: 'b:1', requestId: 'new' }));
+    expect(route(store, 'new')).toBe('inlet');
+  });
+  it('bootstrap completed markers are readable at the terminal, not replayed starts', () => {
+    const completed = success(boot(), 'old', 1).live!;
+    const store = acceptSnapshot(createStore(), completed, 'initial');
+    expect(route(store, 'old')).toBe('success');
+    expect(store.journeys[0].completed).toBe(true);
+    expect(store.journeys[0].elapsed).toBeGreaterThanOrEqual(600);
+    expect(frame(store).live?.events).toEqual(completed.events);
+  });
+  it('bounds authoritative events without erasing unplayed visual stages', () => {
+    let store = success(boot(), 'req-1', 1);
+    for (let i = 5; i <= 1200; i++) store = ingest(store, event(i, 'CIRCUIT_CLOSED', { requestId: null }));
     expect(store.live!.events.length).toBeLessThanOrEqual(1000);
-    expect(store.queue.length).toBeLessThanOrEqual(1000);
-    expect(ingest(store, event(1201, 'REQUEST_STARTED', { epoch: 'unknown' })).sequence).toBe(1200);
+    expect(route(store)).toBe('inlet');
+    expect(ingest(store, event(1201, 'REQUEST_STARTED', { epoch: 'unknown' }))).toBe(store);
   });
 });
 
-describe('timestamp-aligned visual playback', () => {
-  it('keeps one logical identity across attempts and parks the retry until RETRY_STARTED', () => {
-    let store = boot();
-    const events = [event(1, 'REQUEST_STARTED', { deadlineAt: 4000 }),
-      event(2, 'ATTEMPT_STARTED', { attemptId: 'req-1:1', index: 1 }),
-      event(3, 'ATTEMPT_FAILED', { attemptId: 'req-1:1', index: 1, status: 503 }),
-      event(4, 'RETRY_SCHEDULED', { backoffMs: 200, index: 2 }),
-      event(5, 'RETRY_STARTED', { timestamp: 1240, index: 2 }),
-      event(6, 'ATTEMPT_STARTED', { timestamp: 1240, attemptId: 'req-1:2', index: 2 })];
-    for (const item of events) store = ingest(store, item);
-    store = advance(store, 100, 1, false, 1240);
-    expect(signalRoute(store.view!, 'req-1')).toBe('wait');
-    store = advance(store, 140, 1, false, 1240);
-    expect(signalRoute(store.view!, 'req-1')).toBe('http');
-    expect(store.view?.histories).toHaveLength(1);
-    expect(store.view?.histories[0].attempts.map(item => item.attemptId)).toEqual(['req-1:1', 'req-1:2']);
+describe('minimum visible journeys, independent of HTTP timing', () => {
+  it('same-timestamp zero-latency success paints inlet, then HTTP, then observed terminal', () => {
+    let store = success(boot(), 'req-1', 1);
+    const authoritative = store.live;
+    expect(authoritative?.histories[0].outcome).toBe('success');
+    expect(route(store)).toBe('inlet');
+    store = frame(store, 0);
+    expect(route(store)).toBe('inlet');
+    store = frame(store, 100);
+    expect(route(store)).toBe('inlet');
+    store = frame(store);
+    expect(route(store)).toBe('http');
+    store = frame(store);
+    expect(route(store)).toBe('success');
+    expect(store.live).toBe(authoritative);
+    expect(store.live?.histories[0].attempts[0].finishedAt).toBe(1000);
   });
-  it('uses actual start and operation-clamped deadline, zero never fabricates timeout', () => {
+  it('all ten batch IDs play admission, HTTP and terminal before completed caps apply', () => {
+    let store = boot();
+    const ids = Array.from({ length: 10 }, (_, i) => `batch-${i}`);
+    ids.forEach((id, i) => { store = success(store, id, i * 4 + 1); });
+    for (const expected of ['inlet', 'http', 'success']) {
+      expect(store.journeys).toHaveLength(10);
+      expect(ids.map(id => route(store, id))).toEqual(ids.map(() => expected));
+      store = frame(store);
+    }
+    expect(store.journeys).toHaveLength(4);
+  });
+  it('rejection plays inlet then shunt without creating HTTP', () => {
+    let store = ingest(boot(), event(1, 'REQUEST_REJECTED', { state: 'OPEN', reason: 'open' }));
+    expect(route(store)).toBe('inlet');
+    store = frame(store);
+    expect(route(store)).toBe('reject');
+    expect(store.journeys[0].history.attempts).toHaveLength(0);
+    expect(store.journeys[0].stages.map(stage => stage.route)).not.toContain('http');
+    expect(store.live?.state).toBe('OPEN');
+  });
+  it('HALF_OPEN stays authoritative while one probe and concurrent rejection enter separately', () => {
+    let store = ingest(boot(), event(1, 'CIRCUIT_HALF_OPEN', { requestId: null, state: 'HALF_OPEN' }));
+    store = ingest(store, event(2, 'REQUEST_STARTED', { probe: true, state: 'HALF_OPEN' }));
+    store = ingest(store, event(3, 'ATTEMPT_STARTED', { attemptId: 'req-1:1', index: 1, state: 'HALF_OPEN' }));
+    store = ingest(store, event(4, 'REQUEST_REJECTED', { requestId: 'req-2', state: 'HALF_OPEN' }));
+    expect(store.view?.state).toBe('HALF_OPEN');
+    expect(store.journeys.filter(item => item.history.probe)).toHaveLength(1);
+    expect(store.journeys.map(item => item.stages.map(stage => stage.route)))
+      .toEqual([['inlet', 'http'], ['inlet', 'reject']]);
+  });
+  it('real rejection start/reject/finish has only one shunt stage', () => {
+    let store = ingest(boot(), event(1, 'REQUEST_STARTED'));
+    store = ingest(store, event(2, 'REQUEST_REJECTED', { reason: 'open' }));
+    store = ingest(store, event(3, 'REQUEST_FINISHED', { reason: 'open' }));
+    expect(store.journeys[0].stages.map(stage => stage.route)).toEqual(['inlet', 'reject']);
+  });
+  it('retry stays in the same journey and never re-enters admission', () => {
+    let store = boot();
+    for (const item of [event(1, 'REQUEST_STARTED'),
+      event(2, 'ATTEMPT_STARTED', { attemptId: 'req-1:1', index: 1 }),
+      event(3, 'ATTEMPT_FAILED', { attemptId: 'req-1:1', status: 503 }),
+      event(4, 'RETRY_SCHEDULED'), event(5, 'RETRY_STARTED'),
+      event(6, 'ATTEMPT_STARTED', { attemptId: 'req-1:2', index: 2 })]) store = ingest(store, item);
+    for (const expected of ['inlet', 'http', 'wait', 'retry', 'http']) {
+      expect(route(store)).toBe(expected);
+      store = frame(store);
+    }
+    expect(store.journeys).toHaveLength(1);
+    expect(store.journeys[0].stages[0].attemptId).toBe('req-1:2');
+    expect(store.live?.histories[0].attempts).toHaveLength(2);
+  });
+  it('elapsed animation time never fabricates HTTP completion or recovery', () => {
     const history = { requestId: 'req-1', startedAt: 1000, deadlineAt: 1500, probe: false,
       attempts: [{ attemptId: 'req-1:1', index: 1, startedAt: 1200 }] };
     expect(attemptTimer(history, DEFAULT_POLICY, 1300)).toEqual({ remaining: 200, fraction: 1 / 3, outcome: 'active' });
     expect(attemptTimer(history, DEFAULT_POLICY, 1800).outcome).toBe('active');
-    expect(attemptTimer({ ...history, attempts: [{ ...history.attempts[0], outcome: 'timeout' }] }, DEFAULT_POLICY, 1800).outcome).toBe('timeout');
-  });
-  it('shows one HALF_OPEN probe and a separate rejection without new HTTP', () => {
-    let store = boot();
-    for (const item of [event(1, 'CIRCUIT_HALF_OPEN', { state: 'HALF_OPEN', requestId: null }),
-      event(2, 'REQUEST_STARTED', { state: 'HALF_OPEN', probe: true }),
-      event(3, 'ATTEMPT_STARTED', { state: 'HALF_OPEN', attemptId: 'req-1:1', index: 1, probe: true }),
-      event(4, 'REQUEST_REJECTED', { state: 'HALF_OPEN', requestId: 'req-2', reason: 'probe-pending' })]) store = ingest(store, item);
-    store = liveCatchUp(store, 1100);
-    expect(store.view?.histories.filter(item => item.probe && !item.finishedAt)).toHaveLength(1);
-    expect(signalRoute(store.view!, 'req-2')).toBe('reject');
-    expect(store.view?.histories.find(item => item.requestId === 'req-2')?.attempts).toHaveLength(0);
-  });
-  it('routes OPEN rejection at the inlet while already admitted work can finish', () => {
-    let store = boot();
-    for (const item of [event(1, 'REQUEST_STARTED'), event(2, 'ATTEMPT_STARTED', { attemptId: 'req-1:1', index: 1 }),
-      event(3, 'CIRCUIT_OPENED', { requestId: null, state: 'OPEN' }),
-      event(4, 'REQUEST_REJECTED', { requestId: 'req-2', state: 'OPEN' })]) store = ingest(store, item);
-    store = liveCatchUp(store, 1100);
-    expect(signalRoute(store.view!, 'req-1')).toBe('http');
-    expect(signalRoute(store.view!, 'req-2')).toBe('reject');
-    expect(recoveryTimer({ ...store.view!, recoveryAt: 1100 }, 2000)).toBe(0);
-    expect(store.view?.state).toBe('OPEN');
-  });
-  it('applies policy observations at their playback boundary, not to earlier attempts', () => {
-    let store = ingest(boot(), event(1, 'REQUEST_STARTED', { deadlineAt: 4000 }));
-    store = acceptSnapshot(store, snapshot({ cursor: 'a:1', serverTime: 1100,
-      policy: { ...DEFAULT_POLICY, attemptTimeoutMs: 1000 } }), 'refresh');
-    expect(store.view?.policy.attemptTimeoutMs).toBe(800);
-    store = advance(store, 50, 1, false, 1200);
-    expect(store.view?.policy.attemptTimeoutMs).toBe(800);
-    store = advance(store, 100, 1, false, 1200);
-    expect(store.view?.policy.attemptTimeoutMs).toBe(1000);
-  });
-  it('pause and quarter-speed only move the visual clock, not authoritative time or policy', () => {
-    let store = ingest(boot(), event(1, 'CIRCUIT_OPENED', { state: 'OPEN', requestId: null }));
-    const authoritative = store.live;
-    store = advance(store, 400, 0.25, true, 1400);
-    expect(store.clock).toBe(1000);
-    store = advance(store, 40, 0.25, false, 1400);
-    expect(store.clock).toBe(1010);
-    expect(store.view?.state).toBe('OPEN');
-    expect(store.live).toBe(authoritative);
-    expect(store.live?.policy.attemptTimeoutMs).toBe(800);
+    expect(recoveryTimer({ ...snapshot(), recoveryAt: 1100 }, 2000)).toBe(0);
+    let store = ingest(boot(), event(1, 'REQUEST_STARTED'));
+    store = ingest(store, event(2, 'ATTEMPT_STARTED', { attemptId: 'req-1:1', index: 1 }));
+    for (let i = 0; i < 10; i++) store = frame(store);
+    expect(route(store)).toBe('http');
+    expect(store.live?.histories[0].outcome).toBeUndefined();
   });
 });

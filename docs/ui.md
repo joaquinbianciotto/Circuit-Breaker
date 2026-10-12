@@ -1,6 +1,6 @@
 # Operate the resilience instrument
 
-The frontend is a real React / TypeScript / Vite / Tailwind application. Its electrical schematic replays observed engine events; it never simulates HTTP results or changes real timers to make an animation look convincing. **T3 assembles the production three-container stack and records real proxy/browser self-checks; independent T4 review remains pending.**
+The frontend is a real React / TypeScript / Vite / Tailwind application. Its electrical schematic stays live while giving every newly observed request a readable inlet, HTTP (when admitted) and observed terminal journey. It never simulates HTTP results or changes real timers for animation. **T3 assembles the production three-container stack and records real proxy/browser self-checks; independent T4 review remains pending.**
 
 ## Quick path
 
@@ -26,23 +26,21 @@ For a guided sequence, start **Auto Demo** from an idle engine. It performs real
 | WAIT capacitor and feedback conductor | A failed attempt returns directly to HTTP inside the **same** logical operation. The signal parks until observed `RETRY_STARTED`. |
 | Green / red terminals | Observed logical success or exhausted/non-retryable failure. |
 | Inlet rejection shunt | Rejection without an upstream HTTP attempt. |
-| Failure meter | A **live backend snapshot observation** of completed logical failures / completed operations. Never per-attempt error percentage. The source timestamp is below the figure. |
-| Recovery annotation | `recoveryAt` minus virtual time, or the actual opening timestamp plus policy. At zero it waits for `CIRCUIT_HALF_OPEN`; it cannot open a probe by itself. |
+| Recovery annotation | `recoveryAt` minus live observation time, or the actual opening timestamp plus policy. At zero it waits for `CIRCUIT_HALF_OPEN`; it cannot open a probe by itself. |
 
-Hover, click or keyboard-focus a component to inspect its purpose. Inspection never sends a request. Select a recorder request ID to trace that request; clear the selection to restore all events. Histories show correlated attempt IDs, actual durations and outcomes. The recorder is live even when the illustration is historical.
+Hover, click or keyboard-focus a component to inspect its purpose. Inspection never sends a request. Select a recorder request ID to trace that request; clear the selection to restore all events. Histories show correlated attempt IDs, actual durations and outcomes. Gate, timers, recorder and backend metrics remain authoritative throughout visible journeys.
 
-### Playback is not engine time
+### Always live, with minimum visible stages
 
-- **1× / 0.5× / 0.25×** affects only the visual clock. An 800 ms backend timeout remains 800 ms at every playback speed.
-- **Pause** holds the diagram's contacts, stages and timers. The labeled **LIVE GATE** and backend failure meter continue reflecting authoritative observations.
-- **PLAYBACK / HISTORICAL** and lag distinguish delayed illustration state from live state. A live CLOSED gate never replaces historical OPEN contacts just to look current.
-- **Live catch-up** explicitly returns the figure to the newest authoritative snapshot and drops its queued visual delay.
-- Travel is an educational replay of an **already observed stage**. It is not a claim that a particular packet occupied a particular physical point at that instant. Fast outcomes remain readable at their terminal and in the stage rail.
-- Policy observations join the visual clock at their snapshot timestamp rather than rewriting earlier playback. Active policy changes are prohibited by the backend. The contracts do not expose historical per-attempt policy revisions; completed attempts therefore use their actual elapsed readout, not an invented old timeout budget.
+There are no pause, speed or manual catch-up controls. Backend observations update immediately; each request has a separate visual journey. Even zero-latency success starts at **REQUEST IN**, then HTTP, then its observed terminal. A rejection travels inlet → shunt without HTTP. Retries retain the logical ID and return directly to HTTP without another admission.
+
+Minimum visible dwell is 320 ms at inlet, 360 ms per HTTP stage, 180 ms at WAIT, 220 ms for retry return and 600 ms at a terminal. These are presentation durations, **not HTTP latency, backoff or timeout measurements**. No elapsed visual time invents an outcome. The timeout dial uses actual attempt timestamps; completed readouts show actual elapsed time.
+
+All unplayed journeys survive completion, REST refresh and reconnect catch-up. Only after their terminal dwell may completed markers be trimmed to the latest four. Bootstrap shows existing snapshot stages without manufacturing engine events; reset/epoch replacement clears old-generation journeys. The visible rolling-ledger widget is removed; backend rolling protection metrics and policy remain unchanged.
 
 ### Projection, mobile and reduced motion
 
-**Focus View** removes the dock, history and explanatory text, expands the plate and retains Send / Batch / Playback / Exit controls. Escape exits and returns keyboard focus to the toggle. On narrow mobile screens, the schematic scrolls horizontally to retain readable component labels; controls and records reflow below it without overflowing the page.
+**Focus View** removes the dock, history and explanatory text, expands the plate and retains Send / Batch / Exit controls. Escape exits and returns keyboard focus to the toggle. On narrow mobile screens, the schematic scrolls horizontally to retain readable component labels; controls and records reflow below it without overflowing the page.
 
 System/local fonts require no CDN. CSS and JavaScript both honor `prefers-reduced-motion`: no traveling pulse or timeout flash, but static stage markers, outcomes, readouts and controls remain functional. One polite status region announces connection/gate/control changes, never animation frames.
 
@@ -58,7 +56,7 @@ Management controls are held while admitted work is active. The server remains t
 
 | File | Review responsibility |
 | --- | --- |
-| `apps/frontend/src/model.ts` | Pure event ingestion, ordering, epoch retirement, deduplication, bounded history, snapshot race fences and virtual playback. |
+| `apps/frontend/src/model.ts` | Pure authoritative ingestion, ordering, epoch retirement, deduplication, snapshot race fences and independent visible journeys. |
 | `apps/frontend/src/useLab.ts` | Same-origin native EventSource, named `engine` / `snapshot`, event-driven REST refresh, connection/offline handling and one shared capped RAF clock. |
 | `apps/frontend/src/topology.ts` / `Machine.tsx` | Painted conductors also sampled by `getPointAtLength`; one mechanical gate, retry WAIT/return, timeout/recovery readouts and inspectable SVG. |
 | `apps/frontend/src/App.tsx` / `Dock.tsx` / `demo.ts` | Real REST controls, full configuration editors and deterministic sequential demo. |
@@ -67,9 +65,9 @@ Management controls are held while admitted work is active. The server remains t
 
 Vite proxies `/api` to **localhost:3001** by default. `LAB_API_PROXY` can select another local development backend; the native smoke check uses isolated ports 3100/3101/3102. The production [nginx configuration](../apps/frontend/nginx.conf) supplies same-origin `/api` with unbuffered, uncached, uncompressed SSE and HTTP/1.1 upstream keepalive, rather than exposing a browser connection directly to an internal service. The ESM `@resilience/contracts` workspace must be built before Vite imports it.
 
-Native EventSource retains Last-Event-ID across its own reconnections. The frontend never reconstructs it manually or launches endless polling. It pulls snapshots at bootstrap, after mutations, on event gaps/completions/transitions and once on browser reconnect. Older sequence, older same-cursor timestamp, retired generation and stale fetch-ticket responses cannot replace newer state. Fresh snapshot metrics/config do not skip a slow visual queue. An incomplete tail or buffer overflow visibly announces resynchronization rather than silently inventing missing transitions.
+Native EventSource retains Last-Event-ID across its own reconnections. The frontend never reconstructs it manually or launches endless polling. It pulls snapshots at bootstrap, after mutations, on event gaps/completions/transitions and once on browser reconnect. Older sequence, older same-cursor timestamp, retired generation and stale fetch-ticket responses cannot replace newer state. Snapshot metrics/config do not erase unpainted journeys. An incomplete event tail announces authoritative restoration and retains known journeys; missing stages are recovered only from observed snapshot histories.
 
-Bounds: 1000 events / playback entries / pending events, 200 completed histories and up to 100 active histories. The recorder presents the latest 100 events and 50 histories. Bootstrap and generation replacement hydrate snapshots without fabricating `REQUEST_STARTED` events. Moving SVG refs and readouts update on the single clock; React rerenders on observed event/control boundaries, not every RAF frame. Moving DOM work pauses offscreen and in hidden documents; capped delta avoids giant resume jumps.
+Bounds: 1000 authoritative/pending events, 200 completed histories and up to 100 active histories. The recorder presents the latest 100 events and 50 histories. Unplayed journeys retain their own histories independently of those caps; sustained ingress while hidden can accumulate visual work. Moving SVG refs/readouts use one clock, with React commits at observed-event or visual-stage boundaries, not every frame. Journey time freezes offscreen or in hidden documents; capped delta and at most one stage transition per frame prevent resume skips.
 
 ## Verify
 
@@ -81,7 +79,7 @@ npm audit --json
 npm audit --omit=dev --json
 ```
 
-Frontend model tests cover ordering, gaps, duplicate events, reset/retired epochs, stale snapshots, delayed snapshot refresh, logical/attempt identity, actual timestamp timeout clamping, real retry waits, HALF_OPEN exclusivity, OPEN rejection, policy playback boundaries and pause/quarter-speed isolation. Demo tests cover exact sequential actions, stop-after-admission and management conflict handling.
+Frontend model/topology tests cover ordering, gaps, duplicates, reset/retired epochs, stale snapshots, same-timestamp zero-latency success, ten-request journeys, refresh/catch-up retention, retry identity, rejection without HTTP and authoritative timeout/recovery clamping. Demo tests cover exact sequential actions, stop-after-admission and management conflict handling.
 
 An optional native Chromium check uses an **already installed** Playwright module, launches only its own processes on isolated ports, refuses occupied ports and closes all launched processes/browser contexts:
 
@@ -93,9 +91,15 @@ node apps/frontend/verify/browser-smoke.mjs "$(npm root -g)/@playwright/cli/node
 
 To check the **existing production Docker stack** instead, append `--docker` to the same command. This mode uses http://localhost:3000, resets lab data, checks browser offline/online and generation replacement **without restarting containers**. Node `npm run verify:compose` separately checks Last-Event-ID replay through nginx. Production mode captures desktop, 1920×1080-viewport focus, reduced-motion and 390 px mobile screenshots as `docker-*.png`, then restores defaults and leaves containers running.
 
-Artifacts stay in ignored `apps/frontend/.verification/`. The check uses no mocked outcomes. It verifies real success, timeout/upstream cancellation, identified WAIT and feedback-path coordinates, four completed failures/OPEN, rejection without HTTP, paused-vs-live gate state, exclusive concurrent recovery probe, full Auto Demo, real policy PATCH, no-request hover, browser offline controls, native Last-Event-ID reconnect after an owned backend restart, generation replacement, focus/Escape, keyboard inspection, reduced motion and 390 px page containment.
+Artifacts stay in ignored `apps/frontend/.verification/`. The check uses no mocked outcomes. It verifies real success, timeout/upstream cancellation, identified WAIT and feedback-path coordinates, zero-latency single and ten-request coordinate journeys, four completed failures/OPEN, inlet/shunt rejection without HTTP, always-live gate state, exclusive concurrent recovery probe, full Auto Demo, real policy PATCH, no-request hover, browser offline controls, native Last-Event-ID reconnect after an owned backend restart, generation replacement, focus/Escape, keyboard inspection, reduced motion and 390 px page containment.
 
-### Evidence and remaining checks
+### Always-live writer validation
+
+Observed model RED: same-timestamp success, ten-request retention and authoritative/visual separation failed against the previous playback model. Additional RED cases caught duplicate rejection stages and bootstrap terminal placement. GREEN: **19 frontend tests**, all four workspace builds and **79 Vitest + 3 Node tests** pass.
+
+The owned-local-process Chromium smoke passes per-ID coordinates collected before sends: normal and zero-latency success, all ten batch IDs, rejection, retry identity, Focus and reduced motion. It also passes real timeout/cancellation, probe exclusivity, reconnect/reset, keyboard and mobile checks, with zero unexpected browser errors. This run did **not** touch or verify Docker. These are writer checks, not independent review approval.
+
+### Historical evidence and remaining checks
 
 - Initial reducer RED: 10 intended failures against inert scaffold exports. GREEN: all initial 11 tests passed after implementation.
 - Additional observed RED/GREEN: policy playback boundary and stale same-cursor snapshot rollback regressions. Expanded browser RED/GREEN caught browser offline leaving SSE apparently open; explicit offline/one-shot online verification fixes the misleading connected controls.

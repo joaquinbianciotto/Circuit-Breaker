@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EngineEvent, Snapshot, SnapshotMessage } from '@resilience/contracts';
 import { api } from './api';
-import { acceptSnapshot, advance, createStore, ingest, liveCatchUp, snapshotTicket, type Store } from './model';
+import { acceptSnapshot, advance, createStore, ingest, snapshotTicket, type Store } from './model';
 
 export type ClockListener = (store: Store, target: number) => void;
 export function useLab() {
@@ -9,14 +9,12 @@ export function useLab() {
   const [store, setStore] = useState(model.current);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState('');
-  const [speed, setSpeed] = useState(1);
-  const [paused, setPaused] = useState(false);
-  const settings = useRef({ speed, paused });
-  settings.current = { speed, paused };
   const anchor = useRef({ server: 0, local: performance.now() });
   const listeners = useRef(new Set<ClockListener>());
   const observers = useRef(new Set<(store: Store) => void>());
   const alive = useRef(true);
+  const visible = useRef(true);
+  const setVisible = useCallback((value: boolean) => { visible.current = value; }, []);
   const fetchRevision = useRef(0);
   const targetTime = useCallback(() => Math.max(model.current.live?.serverTime ?? 0,
     anchor.current.server + performance.now() - anchor.current.local), []);
@@ -96,10 +94,11 @@ export function useLab() {
       previous = now;
       const target = targetTime();
       const before = model.current;
-      const next = advance(before, dt, settings.current.speed, settings.current.paused, target);
+      const next = advance(before, document.hidden || !visible.current ? 0 : dt, target);
       model.current = next;
       // React commits only on event boundaries. Moving SVG/readout refs use this same clock.
-      if (next.view !== before.view) setStore(next);
+      if (next.journeys.some((journey, index) => journey.stages !== before.journeys[index]?.stages) ||
+          next.journeys.length !== before.journeys.length) setStore(next);
       for (const listener of listeners.current) listener(next, target);
       frame = requestAnimationFrame(tick);
     };
@@ -120,11 +119,6 @@ export function useLab() {
     listeners.current.add(listener);
     return () => { listeners.current.delete(listener); };
   }, []);
-  const catchUp = useCallback(() => {
-    setPaused(false);
-    setSpeed(1);
-    publish(liveCatchUp(model.current, targetTime()));
-  }, [publish, targetTime]);
   const waitForProbe = useCallback((signal: AbortSignal) => new Promise<void>((resolve, reject) => {
     if (model.current.live?.state === 'HALF_OPEN') { resolve(); return; }
     let timer: ReturnType<typeof setTimeout>;
@@ -137,5 +131,5 @@ export function useLab() {
     if (signal.aborted) abort();
   }), []);
   return { store, model, connected: connected && !!store.live && !store.gap, error, setError,
-    speed, setSpeed, paused, setPaused, subscribe, catchUp, restore, refresh, waitForProbe };
+    subscribe, setVisible, restore, refresh, waitForProbe };
 }

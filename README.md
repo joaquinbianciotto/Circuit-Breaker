@@ -37,7 +37,7 @@ Upstream starts **normal**, latency **0 ms**, error status **503**, failure rate
 
 - Retry 5xx, network failure and timeout; ordinary 4xx never retry.
 - OPEN rejects without HTTP. HALF_OPEN admits exactly one single-attempt probe; concurrent arrivals reject. Recover Service changes upstream only, not breaker state.
-- Playback 0.25×/0.5×/pause changes the illustration, **never the real 800 ms timer**. LIVE GATE, labeled snapshots and event/history records remain authoritative.
+- Always-live visualization gives every new request a minimum visible REQUEST IN → HTTP → observed terminal journey, including zero-latency and ten-request batches. Rejections bypass HTTP; retries never repeat admission. No pause/speed/jump controls or visual rolling-ledger widget remain; backend timers, metrics and protection stay unchanged.
 - Reset Simulation restores engine/upstream defaults, counters and replay generation. Policy Apply closes the gate and clears the rolling baseline but retains lifetime history. Management conflicts return 409 while work is active.
 
 ## Stop and safety

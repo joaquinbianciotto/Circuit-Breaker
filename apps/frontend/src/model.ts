@@ -3,14 +3,19 @@ import type { EngineEvent, Policy, RequestHistory, Snapshot } from '@resilience/
 export const EVENT_LIMIT = 1000;
 export const HISTORY_LIMIT = 200;
 export type Route = 'inlet' | 'http' | 'retry' | 'wait' | 'success' | 'failure' | 'reject';
+export interface Stage { route: Route; attemptId?: string; index?: number }
+export interface Journey { history: RequestHistory; stages: Stage[]; elapsed: number; completed: boolean }
+export const STAGE_MS: Record<Route, number> = {
+  inlet: 320, http: 360, wait: 180, retry: 220, success: 600, failure: 600, reject: 600,
+};
+const terminal = (route: Route) => ['success', 'failure', 'reject'].includes(route);
 export interface Store {
   live: Snapshot | null;
   view: Snapshot | null;
   clock: number;
   sequence: number;
-  queue: EngineEvent[];
+  journeys: Journey[];
   pending: EngineEvent[];
-  policyObservations: { timestamp: number; policy: Policy }[];
   retired: string[];
   generation: number;
   gap: boolean;
@@ -18,7 +23,7 @@ export interface Store {
 }
 export interface SnapshotTicket { epoch: string | null; generation: number }
 export const createStore = (): Store => ({
-  live: null, view: null, clock: 0, sequence: 0, queue: [], pending: [], policyObservations: [],
+  live: null, view: null, clock: 0, sequence: 0, journeys: [], pending: [],
   retired: [], generation: 0, gap: false, notice: '',
 });
 export const snapshotTicket = (store: Store): SnapshotTicket => ({
@@ -87,12 +92,22 @@ export function ingest(store: Store, event: EngineEvent): Store {
   let next = { ...store, pending: [...store.pending, event].sort((a, b) => a.sequence - b.sequence).slice(0, EVENT_LIMIT) };
   while (next.pending[0]?.sequence === next.sequence + 1) {
     const item = next.pending[0];
-    if (next.queue.length >= EVENT_LIMIT) {
-      // Bounded slow playback cannot silently lose topology transitions.
-      next = { ...next, view: next.live, clock: next.live!.serverTime, queue: [], policyObservations: [], notice: 'Playback resynchronized: bounded buffer reached.' };
+    const live = applyEvent(next.live!, item);
+    let journeys = next.journeys;
+    const history = live.histories.find(history => history.requestId === item.requestId);
+    if (history) {
+      const existing = journeys.find(journey => journey.history.requestId === item.requestId);
+      const route: Route | undefined = item.type === 'ATTEMPT_STARTED' ? 'http'
+        : item.type === 'RETRY_SCHEDULED' ? 'wait' : item.type === 'RETRY_STARTED' ? 'retry'
+        : item.type === 'REQUEST_REJECTED' ? 'reject'
+        : item.type === 'REQUEST_FINISHED' ? signalRoute(live, history.requestId) : undefined;
+      const journey = existing ?? { history, stages: [{ route: 'inlet' as Route }], elapsed: 0, completed: false };
+      const stage = route ? { route, attemptId: item.attemptId, index: item.index } : undefined;
+      const append = stage && !(terminal(stage.route) && journey.stages.some(item => terminal(item.route)));
+      const updated = { ...journey, history, stages: append ? [...journey.stages, stage] : journey.stages };
+      journeys = existing ? journeys.map(value => value === existing ? updated : value) : [...journeys, updated];
     }
-    next = { ...next, live: applyEvent(next.live!, item), sequence: item.sequence,
-      queue: [...next.queue, item], pending: next.pending.slice(1) };
+    next = { ...next, live, view: live, journeys, sequence: item.sequence, pending: next.pending.slice(1) };
   }
   next.gap = next.pending.length > 0;
   return next;
@@ -105,7 +120,13 @@ export function acceptSnapshot(store: Store, snapshot: Snapshot, reason: string,
   if (store.live?.epoch === snapshot.epoch && (sequence < store.sequence ||
       (sequence === store.sequence && snapshot.serverTime < store.live.serverTime))) return store;
   if (!store.live || store.live.epoch !== snapshot.epoch || reason === 'reset') {
-    return { ...createStore(), live: snapshot, view: snapshot, clock: snapshot.serverTime, sequence,
+    const histories = [...snapshot.histories.filter(item => item.finishedAt !== undefined).slice(-4),
+      ...snapshot.histories.filter(item => item.finishedAt === undefined)];
+    const journeys = histories.map(history => ({ history, stages: [{ route: signalRoute(snapshot, history.requestId),
+      attemptId: history.attempts.at(-1)?.attemptId, index: history.attempts.at(-1)?.index }],
+      elapsed: history.finishedAt !== undefined ? STAGE_MS[signalRoute(snapshot, history.requestId)] : 0,
+      completed: history.finishedAt !== undefined }));
+    return { ...createStore(), live: snapshot, view: snapshot, journeys, clock: snapshot.serverTime, sequence,
       generation: store.generation + 1,
       retired: store.live && store.live.epoch !== snapshot.epoch
         ? [...store.retired, store.live.epoch].slice(-32) : store.retired,
@@ -115,41 +136,49 @@ export function acceptSnapshot(store: Store, snapshot: Snapshot, reason: string,
   const tail = snapshot.events.filter(item => item.epoch === snapshot.epoch && item.sequence > store.sequence)
     .sort((a, b) => a.sequence - b.sequence);
   for (const event of tail) next = ingest(next, event);
-  if (next.sequence !== sequence) {
-    return { ...next, live: snapshot, view: snapshot, clock: snapshot.serverTime,
-      sequence, pending: [], queue: [], policyObservations: [], gap: false, notice: 'Playback resynchronized: event tail has a gap.' };
+  const missingTail = next.sequence !== sequence;
+  // Snapshot catch-up repairs authority, never discards an unpainted journey.
+  let journeys = next.journeys.map(journey => ({ ...journey,
+    history: snapshot.histories.find(item => item.requestId === journey.history.requestId) ?? journey.history }));
+  for (const history of snapshot.histories) {
+    let journey = journeys.find(item => item.history.requestId === history.requestId);
+    if (!journey && !store.live.histories.some(item => item.requestId === history.requestId)) {
+      journey = { history, stages: [{ route: 'inlet' }], elapsed: 0, completed: false };
+      journeys.push(journey);
+    }
+    if (!journey || journey.completed) continue;
+    // If the tail expired, recover only stages evidenced by real snapshot history.
+    const stages = [...journey.stages];
+    for (const attempt of history.attempts) {
+      if (!stages.some(stage => stage.attemptId === attempt.attemptId && stage.route === 'http') &&
+          (!next.live?.histories.find(item => item.requestId === history.requestId)?.attempts
+            .some(item => item.attemptId === attempt.attemptId))) {
+        stages.push({ route: 'http', attemptId: attempt.attemptId, index: attempt.index });
+      }
+    }
+    if (history.outcome && !stages.some(stage => terminal(stage.route))) {
+      stages.push({ route: signalRoute(snapshot, history.requestId) });
+    }
+    journeys = journeys.map(item => item === journey ? { ...item, stages } : item);
   }
-  // A fresh REST response updates real metrics/config without fast-forwarding the figure.
-  const changedPolicy = JSON.stringify(snapshot.policy) !== JSON.stringify(store.live.policy);
-  const policyObservations = changedPolicy
-    ? [...next.policyObservations, { timestamp: snapshot.serverTime, policy: snapshot.policy }].slice(-EVENT_LIMIT)
-    : next.policyObservations;
-  return { ...next, live: snapshot, policyObservations, pending: next.pending.filter(item => item.sequence > sequence),
-    gap: next.pending.some(item => item.sequence > sequence) };
+  const pending = missingTail ? [] : next.pending.filter(item => item.sequence > sequence);
+  return { ...next, live: snapshot, view: snapshot, journeys, sequence, pending, gap: pending.length > 0,
+    notice: missingTail ? 'Authoritative snapshot restored: event tail has a gap; known journeys retained.' : next.notice };
 }
 
-export function advance(store: Store, dt: number, speed: number, paused: boolean, target: number): Store {
-  if (paused || !store.view) return store;
-  const clock = Math.min(Math.max(target, store.clock), store.clock + Math.max(0, dt) * speed);
-  let view = store.view;
-  let index = 0;
-  let observation = 0;
-  const applyPolicyThrough = (timestamp: number) => {
-    while (store.policyObservations[observation]?.timestamp <= timestamp) {
-      view = { ...view, policy: store.policyObservations[observation++].policy };
-    }
-  };
-  while (index < store.queue.length && store.queue[index].timestamp <= clock) {
-    applyPolicyThrough(store.queue[index].timestamp);
-    view = applyEvent(view, store.queue[index++]);
-  }
-  applyPolicyThrough(clock);
-  return { ...store, view, clock, queue: index ? store.queue.slice(index) : store.queue,
-    policyObservations: observation ? store.policyObservations.slice(observation) : store.policyObservations };
-}
-export function liveCatchUp(store: Store, target: number): Store {
+export function advance(store: Store, dt: number, target: number): Store {
   if (!store.live) return store;
-  return { ...store, view: store.live, clock: Math.max(target, store.live.serverTime), queue: [], policyObservations: [] };
+  const journeys = store.journeys.map(journey => {
+    if (journey.completed) return journey;
+    const elapsed = journey.elapsed + Math.max(0, dt);
+    if (elapsed < STAGE_MS[journey.stages[0].route]) return { ...journey, elapsed };
+    // At most one transition per painted frame, even after a delayed frame.
+    if (journey.stages.length > 1) return { ...journey, stages: journey.stages.slice(1), elapsed: 0 };
+    return { ...journey, elapsed, completed: terminal(journey.stages[0].route) };
+  });
+  const completed = journeys.filter(item => item.completed).slice(-4);
+  return { ...store, clock: Math.max(target, store.live.serverTime),
+    journeys: journeys.filter(item => !item.completed || completed.includes(item)) };
 }
 
 export function signalRoute(snapshot: Snapshot, id: string): Route {

@@ -1,16 +1,15 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { Snapshot } from '@resilience/contracts';
-import { attemptTimer, recoveryTimer, shortId, signalRoute, type Route } from './model';
-import { CONDUCTORS, WAIT_POINT } from './topology';
+import { attemptTimer, recoveryTimer, shortId, STAGE_MS, type Journey, type Route } from './model';
+import { CONDUCTORS, REDUCED_POSITION, STAGE_ORIGIN, WAIT_POINT } from './topology';
 import type { ClockListener } from './useLab';
 
 export const PARTS = {
   gate: { title: '01 / Admission contacts', text: 'One breaker wraps a whole logical operation. CLOSED admits; OPEN rejects before HTTP. Work already admitted can still finish.' },
   timeout: { title: '02 / Attempt timeout', text: 'Each real HTTP attempt has its own abort deadline, clamped to the operation budget. Zero means awaiting an event, not a fabricated timeout.' },
   retry: { title: '03 / Retry feedback & WAIT', text: 'A retry stays inside the same logical operation. The identified signal parks during real backoff, then returns directly to HTTP—not through the breaker.' },
-  meter: { title: '04 / Completed-operation meter', text: 'The backend rolling ledger counts completed logical successes and failures. Attempts, pending work and rejected admissions never enter its denominator.' },
-  probe: { title: '05 / Controlled probe', text: 'After the actual HALF_OPEN event, one operation can probe with one attempt and no retries. Concurrent arrivals reject. Only its outcome controls recovery.' },
-  rejection: { title: '06 / Rejection shunt', text: 'An OPEN, occupied probe, maintenance or capacity rejection terminates at the inlet shunt. It creates no upstream HTTP attempt.' },
+  probe: { title: '04 / Controlled probe', text: 'After the actual HALF_OPEN event, one operation can probe with one attempt and no retries. Concurrent arrivals reject. Only its outcome controls recovery.' },
+  rejection: { title: '05 / Rejection shunt', text: 'An OPEN, occupied probe, maintenance or capacity rejection terminates at the inlet shunt. It creates no upstream HTTP attempt.' },
 } as const;
 export type Part = keyof typeof PARTS;
 const colors: Record<Route, string> = {
@@ -19,16 +18,17 @@ const colors: Record<Route, string> = {
 };
 interface Props {
   snapshot: Snapshot;
-  live: Snapshot;
+  journeys: Journey[];
   focus?: boolean;
   selected: string | null;
   inspect: Part;
   onInspect: (part: Part) => void;
   onSelect: (id: string) => void;
   subscribe: (listener: ClockListener) => () => void;
+  onVisibility: (visible: boolean) => void;
 }
 
-export function Machine({ snapshot, live, focus = false, selected, inspect, onInspect, onSelect, subscribe }: Props) {
+export function Machine({ snapshot, journeys, focus = false, selected, inspect, onInspect, onSelect, subscribe, onVisibility }: Props) {
   const root = useRef<SVGSVGElement>(null);
   const paths = useRef(new Map<Route, SVGPathElement>());
   const waitDistance = useRef(0);
@@ -38,21 +38,13 @@ export function Machine({ snapshot, live, focus = false, selected, inspect, onIn
   const timerState = useRef<SVGTextElement>(null);
   const recoveryValue = useRef<SVGTextElement>(null);
   const visible = useRef(true);
-  const [reduced, setReduced] = useState(false);
-  const trackable = snapshot.histories.filter(item => !item.finishedAt);
-  const terminal = snapshot.histories.filter(item => item.finishedAt).slice(-4);
-  const histories = [...terminal, ...trackable].slice(-10);
-  if (selected && !histories.some(item => item.requestId === selected)) {
-    const item = snapshot.histories.find(item => item.requestId === selected);
-    if (item) histories.unshift(item);
-  }
+  const [reduced, setReduced] = useState(() =>
+    typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const histories = journeys.map(journey => journey.history);
   const watched = snapshot.histories.find(item => item.requestId === selected)
-    ?? trackable.at(-1) ?? snapshot.histories.at(-1);
+    ?? snapshot.histories.findLast(item => item.finishedAt === undefined) ?? snapshot.histories.at(-1);
   const closed = snapshot.state === 'CLOSED';
   const probe = snapshot.state === 'HALF_OPEN';
-  const rolling = live.metrics;
-  const percentage = Math.min(100, rolling.errorPercentage);
-  const meterAngle = -90 + percentage * 1.8;
   const contactColor = closed ? 'var(--cyan)' : probe ? 'var(--amber)' : 'var(--red)';
 
   useEffect(() => {
@@ -60,10 +52,13 @@ export function Machine({ snapshot, live, focus = false, selected, inspect, onIn
     const update = () => setReduced(media.matches);
     update();
     media.addEventListener('change', update);
-    const observer = new IntersectionObserver(entries => { visible.current = entries[0]?.isIntersecting ?? true; });
+    const observer = new IntersectionObserver(entries => {
+      visible.current = entries[0]?.isIntersecting ?? true;
+      onVisibility(visible.current);
+    });
     if (root.current) observer.observe(root.current);
     return () => { media.removeEventListener('change', update); observer.disconnect(); };
-  }, []);
+  }, [onVisibility]);
 
   useEffect(() => subscribe(store => {
     if (!store.view || !visible.current || document.hidden) return;
@@ -72,20 +67,16 @@ export function Machine({ snapshot, live, focus = false, selected, inspect, onIn
       const history = histories[lane];
       const group = signals.current.get(history.requestId);
       if (!group) continue;
-      const stage = signalRoute(store.view, history.requestId);
-      const event = store.view.events.findLast(item => item.requestId === history.requestId);
-      const retryStarted = store.view.events.findLast(item => item.requestId === history.requestId && item.type === 'RETRY_STARTED');
-      const returning = stage === 'http' && retryStarted && now - retryStarted.timestamp < 220;
-      const route = returning ? 'retry' : stage;
+      const journey = store.journeys.find(item => item.history.requestId === history.requestId);
+      if (!journey) continue;
+      const stage = journey.stages[0];
+      const route = stage.route;
       const path = paths.current.get(route === 'wait' ? 'retry' : route);
-      const started = returning ? retryStarted.timestamp : event?.timestamp ?? history.startedAt;
-      const age = Math.max(0, now - started);
-      const terminalRoute = ['success', 'failure', 'reject'].includes(route);
-      const duration = route === 'retry' ? 220 : terminalRoute ? 600 : 700;
-      // This is explicitly a visual replay of the observed stage, never a backend result.
-      const phase = reduced ? 1 : terminalRoute ? Math.min(1, age / duration)
-        : route === 'wait' || route === 'retry' ? Math.min(1, age / (route === 'wait' ? 140 : duration))
-        : ((age / duration + lane * 0.19) % 1);
+      // Stage time is visual only; timers below still use authoritative timestamps.
+      const phase = reduced ? (route === 'inlet' ? 0 : 1)
+        : Math.min(1, route === 'inlet' ? Math.max(0, journey.elapsed - 100) / (STAGE_MS.inlet - 100)
+          : journey.elapsed / (STAGE_MS[route] - (route === 'wait' ? 80
+            : ['success', 'failure', 'reject'].includes(route) ? 120 : 0)));
       const length = path?.getTotalLength() ?? 0;
       const feedback = paths.current.get('retry');
       if (!waitDistance.current && feedback) {
@@ -99,9 +90,12 @@ export function Machine({ snapshot, live, focus = false, selected, inspect, onIn
       }
       group.style.color = history.probe && (route === 'http' || route === 'inlet') ? colors.retry : colors[route];
       group.dataset.route = route;
-      group.dataset.stageRoute = stage;
+      group.dataset.stageRoute = route;
+      group.dataset.attemptId = stage.attemptId ?? '';
+      group.dataset.attemptIndex = String(stage.index ?? 0);
       group.dataset.phase = phase.toFixed(3);
       const point = (progress: number) => {
+        if (reduced) return REDUCED_POSITION[route];
         const bounded = Math.max(0, progress);
         const distance = route === 'wait' ? waitDistance.current * bounded
           : route === 'retry' ? waitDistance.current + (length - waitDistance.current) * bounded
@@ -119,7 +113,7 @@ export function Machine({ snapshot, live, focus = false, selected, inspect, onIn
       const label = group.querySelector('text');
       if (label) {
         label.setAttribute('x', String(position.x));
-        label.setAttribute('y', String(position.y - 16 - (lane % 4) * 17));
+        label.setAttribute('y', String(position.y - 16 - (lane % 10) * 15));
       }
     }
     if (watched && watched.attempts.length) {
@@ -142,7 +136,7 @@ export function Machine({ snapshot, live, focus = false, selected, inspect, onIn
         ? remaining ? `${(remaining / 1000).toFixed(1)} s to probe` : 'AWAIT HALF_OPEN'
         : store.view.state === 'HALF_OPEN' ? 'SINGLE PROBE / NO RETRY' : 'ADMISSION ENABLED';
     }
-  }), [subscribe, histories, watched, reduced]);
+  }), [subscribe, journeys, watched, reduced]);
 
   const partProps = (part: Part) => ({
     role: 'button', tabIndex: 0, 'aria-label': PARTS[part].title,
@@ -157,7 +151,7 @@ export function Machine({ snapshot, live, focus = false, selected, inspect, onIn
   return <svg ref={root} viewBox={focus ? '40 110 1060 530' : '0 0 1120 740'} className="machine" data-testid="machine"
     data-state={snapshot.state} data-epoch={snapshot.epoch} data-reduced-motion={reduced} aria-labelledby="machine-title machine-description">
     <title id="machine-title">HTTP resilience protection instrument — {snapshot.state}</title>
-    <desc id="machine-description">A single admission gate feeds real HTTP attempts. A timeout dial measures the selected attempt; retry feedback parks at WAIT before re-entering HTTP. Separate branches terminate success, failure and rejection. Diagram state follows the labeled visual playback; the completed-operation meter is a live backend observation.</desc>
+    <desc id="machine-description">A single admission gate feeds real HTTP attempts. A timeout dial measures the selected attempt; retry feedback parks at WAIT before re-entering HTTP. Separate branches terminate success, failure and rejection. Gate state and timers are live observations; each request retains minimum visible journey stages.</desc>
     <defs>
       <pattern id="engineering-grid" width="28" height="28" patternUnits="userSpaceOnUse">
         <path d="M28 0 H0 V28" fill="none" stroke="#acbbc8" strokeOpacity=".045" strokeWidth="1" />
@@ -176,7 +170,7 @@ export function Machine({ snapshot, live, focus = false, selected, inspect, onIn
     <text x="48" y="90" className="svg-title">The resilience machine</text>
     <text x="48" y="119" className="svg-secondary">One logical operation. Bounded HTTP attempts.</text>
     <text x="1070" y="56" textAnchor="end" className="svg-kicker">RL—01 · v0.1</text>
-    <text x="1070" y="88" textAnchor="end" className="svg-secondary">REAL HTTP / OBSERVED REPLAY</text>
+    <text x="1070" y="88" textAnchor="end" className="svg-secondary">REAL HTTP / OBSERVED JOURNEYS</text>
     <path d="M48 143 H1072" className="hairline" />
     </g>}
 
@@ -256,19 +250,6 @@ export function Machine({ snapshot, live, focus = false, selected, inspect, onIn
       <path d="M480 419 l-6 10 M480 419 l6 10" className="feedback-direction" />
       <text x="808" y="475" className="svg-small">5xx / network / abort</text>
     </g>
-    <g {...partProps('meter')}>
-      <rect x="61" y="423" width="352" height="157" rx="10" className="hit-area" />
-      <path d="M105 531 A87 87 0 0 1 279 531" className="meter-rim" />
-      <path d="M105 531 A87 87 0 0 1 279 531" className="meter-scale" pathLength="100" strokeDasharray="1 9" />
-      <line x1="192" y1="531" x2="192" y2="461" className="meter-needle" transform={`rotate(${meterAngle} 192 531)`} />
-      <circle cx="192" cy="531" r="5" className="dial-hub" />
-      <text x="192" y="558" textAnchor="middle" className="svg-readout" data-testid="failure-percentage">{percentage.toFixed(0)}%</text>
-      <text x="292" y="465" className="svg-label">FAILURE</text>
-      <text x="292" y="489" className="svg-small">≥ {live.policy.errorThresholdPercentage}% trips</text>
-      <text x="292" y="514" className="svg-small">{rolling.rollingFailed} / {rolling.rollingCompleted} complete</text>
-      <text x="292" y="539" className="svg-small">min {live.policy.minimumVolume} / {live.policy.rollingWindowMs / 1000}s</text>
-      <text x="95" y="434" className="svg-small">LIVE BACKEND ROLLING LEDGER</text>
-    </g>
     <g {...partProps('rejection')}>
       <rect x="270" y="582" width="733" height="57" rx="8" className="hit-area" />
       <path d="M293 603 l10 18 M303 603 l-10 18" className="reject-symbol" />
@@ -278,35 +259,38 @@ export function Machine({ snapshot, live, focus = false, selected, inspect, onIn
     </g>
 
     <g className="signals" aria-hidden="true">
-      {histories.map(history => {
-        const route = signalRoute(snapshot, history.requestId);
+      {journeys.map(({ history, stages }, lane) => {
+        const stage = stages[0];
+        const route = stage.route;
+        const origin = reduced ? REDUCED_POSITION[route] : STAGE_ORIGIN[route];
+        const trailStyle = reduced ? { opacity: 0 } : undefined;
         return <g key={history.requestId} ref={element => {
           if (element) signals.current.set(history.requestId, element); else signals.current.delete(history.requestId);
         }} style={{ color: history.probe && (route === 'http' || route === 'inlet') ? colors.retry : colors[route] }} data-testid="signal" data-route={route}
           data-probe={history.probe}
-          data-lane={histories.indexOf(history)} data-stage-route={route}
-          data-request-id={history.requestId} data-attempt-id={history.attempts.at(-1)?.attemptId ?? ''}
-          data-attempt-index={history.attempts.at(-1)?.index ?? 0}>
-          <circle r={selected === history.requestId ? 6 : 4} fill="currentColor" />
-          <circle r="7" fill="currentColor" filter="url(#signal-glow)" />
-          <circle r="3" fill="currentColor" />
-          <circle r="2" fill="currentColor" />
-          <text className="signal-id">{shortId(history.requestId)}·A{history.attempts.at(-1)?.index ?? '—'}</text>
+          data-lane={lane} data-stage-route={route}
+          data-request-id={history.requestId} data-attempt-id={stage.attemptId ?? ''}
+          data-attempt-index={stage.index ?? 0}>
+          <circle cx={origin.x} cy={origin.y} r={selected === history.requestId ? 6 : 4} fill="currentColor" />
+          <circle cx={origin.x} cy={origin.y} r="7" fill="currentColor" filter="url(#signal-glow)" style={trailStyle} />
+          <circle cx={origin.x} cy={origin.y} r="3" fill="currentColor" style={trailStyle} />
+          <circle cx={origin.x} cy={origin.y} r="2" fill="currentColor" style={trailStyle} />
+          <text x={origin.x} y={origin.y - 16 - (lane % 10) * 15} className="signal-id">{shortId(history.requestId)}</text>
         </g>;
       })}
     </g>
     {!focus && <g>
     <path d="M48 652 H1072" className="hairline" />
     <text x="48" y="682" className="svg-small">OBSERVED STAGES</text>
-    {histories.slice(-4).map((history, index) => <g key={history.requestId} role="button" tabIndex={0}
+    {journeys.slice(-4).map(({ history, stages }, index) => <g key={history.requestId} role="button" tabIndex={0}
       aria-label={`Trace request ${shortId(history.requestId)}`} className="trace-label"
       onClick={() => onSelect(history.requestId)} onKeyDown={event => {
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelect(history.requestId); }
       }}>
       <text x={260 + index * 203} y="681" className="svg-readout">{shortId(history.requestId)} · A{history.attempts.at(-1)?.index ?? '—'}</text>
-      <text x={260 + index * 203} y="706" className="svg-small" style={{ fill: colors[signalRoute(snapshot, history.requestId)] }}>
-        {signalRoute(snapshot, history.requestId) === 'wait'
-          ? `WAIT → RETRY ${history.attempts.length}` : (history.outcome ?? signalRoute(snapshot, history.requestId)).toUpperCase()}
+      <text x={260 + index * 203} y="706" className="svg-small" style={{ fill: colors[stages[0].route] }}>
+        {stages[0].route === 'wait'
+          ? `WAIT → RETRY ${history.attempts.length}` : stages[0].route.toUpperCase()}
       </text>
     </g>)}
     </g>}
