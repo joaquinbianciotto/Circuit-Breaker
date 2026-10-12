@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EngineEvent, Snapshot, SnapshotMessage } from '@resilience/contracts';
 import { api } from './api';
-import { acceptSnapshot, advance, createStore, ingest, snapshotTicket, type Store } from './model';
+import { acceptSnapshot, advance, createStore, ingest, normalizeVisualSpeed, snapshotTicket, type Store } from './model';
 
 export type ClockListener = (store: Store, target: number) => void;
-export function useLab() {
+export function useLab(visualSpeed = 1) {
+  const rate = useRef(normalizeVisualSpeed(visualSpeed));
+  useEffect(() => { rate.current = normalizeVisualSpeed(visualSpeed); }, [visualSpeed]);
   const model = useRef(createStore());
   const [store, setStore] = useState(model.current);
   const [connected, setConnected] = useState(false);
@@ -94,7 +96,7 @@ export function useLab() {
       previous = now;
       const target = targetTime();
       const before = model.current;
-      const next = advance(before, document.hidden || !visible.current ? 0 : dt, target);
+      const next = advance(before, document.hidden || !visible.current ? 0 : dt, target, rate.current);
       model.current = next;
       // React commits only on event boundaries. Moving SVG/readout refs use this same clock.
       if (next.journeys.some((journey, index) => journey.stages !== before.journeys[index]?.stages) ||

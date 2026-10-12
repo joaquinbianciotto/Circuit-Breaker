@@ -2,6 +2,10 @@ import type { EngineEvent, Policy, RequestHistory, Snapshot } from '@resilience/
 
 export const EVENT_LIMIT = 1000;
 export const HISTORY_LIMIT = 200;
+export const VISUAL_SPEEDS = [1, 0.5, 0.25] as const;
+export type VisualSpeed = typeof VISUAL_SPEEDS[number];
+export const normalizeVisualSpeed = (rate: number): VisualSpeed =>
+  VISUAL_SPEEDS.find(supported => supported === rate) ?? 1;
 export type Route = 'inlet' | 'http' | 'retry' | 'wait' | 'success' | 'failure' | 'reject';
 export interface Stage { route: Route; attemptId?: string; index?: number }
 export interface Journey { history: RequestHistory; stages: Stage[]; elapsed: number; completed: boolean }
@@ -166,11 +170,12 @@ export function acceptSnapshot(store: Store, snapshot: Snapshot, reason: string,
     notice: missingTail ? 'Authoritative snapshot restored: event tail has a gap; known journeys retained.' : next.notice };
 }
 
-export function advance(store: Store, dt: number, target: number): Store {
+export function advance(store: Store, dt: number, target: number, visualSpeed = 1): Store {
   if (!store.live) return store;
+  const journeyDelta = Math.max(0, dt) * normalizeVisualSpeed(visualSpeed);
   const journeys = store.journeys.map(journey => {
     if (journey.completed) return journey;
-    const elapsed = journey.elapsed + Math.max(0, dt);
+    const elapsed = journey.elapsed + journeyDelta;
     if (elapsed < STAGE_MS[journey.stages[0].route]) return { ...journey, elapsed };
     // At most one transition per painted frame, even after a delayed frame.
     if (journey.stages.length > 1) return { ...journey, stages: journey.stages.slice(1), elapsed: 0 };

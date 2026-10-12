@@ -94,6 +94,95 @@ describe('always-live authoritative observations', () => {
   });
 });
 
+describe('visual speed changes presentation only', () => {
+  it('quarter speed takes exactly four times the default journey delta', () => {
+    const initial = success(boot(), 'req-1', 1);
+    const duration = (rate: number) => {
+      let store = initial;
+      let elapsed = 0;
+      while (!store.journeys[0].completed && elapsed < 10000) {
+        elapsed += 20;
+        store = advance(store, 20, 1000 + elapsed, rate);
+      }
+      expect(store.journeys[0].completed).toBe(true);
+      return elapsed;
+    };
+    expect(duration(1)).toBe(1280);
+    expect(duration(0.5)).toBe(2560);
+    expect(duration(0.25)).toBe(5120);
+  });
+  it('defaults to the unchanged 1× behavior and rejects unsupported rates by using 1×', () => {
+    const initial = success(boot(), 'req-1', 1);
+    const normal = advance(initial, 100, 1100);
+    expect(advance(initial, 100, 1100, 1)).toEqual(normal);
+    for (const rate of [0, -1, NaN, Infinity, -Infinity, 0.1, 2]) {
+      expect(advance(initial, 100, 1100, rate)).toEqual(normal);
+    }
+  });
+  it('keeps authoritative clock, events, outcomes and HTTP/recovery timers unchanged', () => {
+    let initial = ingest(boot(), event(1, 'REQUEST_STARTED'));
+    initial = ingest(initial, event(2, 'ATTEMPT_STARTED', { attemptId: 'req-1:1', index: 1 }));
+    initial = ingest(initial, event(3, 'CIRCUIT_OPENED', { requestId: null, state: 'OPEN' }));
+    const normal = advance(initial, 100, 1250);
+    const slow = advance(initial, 100, 1250, 0.25);
+    expect(slow.journeys[0].elapsed).toBe(25);
+    expect(normal.journeys[0].elapsed).toBe(100);
+    expect(slow.clock).toBe(normal.clock);
+    expect(slow.live).toBe(initial.live);
+    expect(slow.view).toBe(initial.view);
+    expect(slow.sequence).toBe(initial.sequence);
+    const history = slow.live!.histories[0];
+    expect(attemptTimer(history, DEFAULT_POLICY, slow.clock))
+      .toEqual(attemptTimer(history, DEFAULT_POLICY, normal.clock));
+    expect(recoveryTimer(slow.live!, slow.clock)).toBe(recoveryTimer(normal.live!, normal.clock));
+    const finished = ingest(slow, event(4, 'REQUEST_FINISHED', { reason: 'failure', state: 'OPEN' }));
+    expect(finished.live!.histories[0].outcome).toBe('failure');
+    expect(finished.journeys[0].elapsed).toBe(25);
+    expect(route(finished)).toBe('inlet');
+  });
+  it('preserves identity, queued stages and continuous progress across rate changes', () => {
+    let store = success(boot(), 'req-1', 1);
+    const stages = store.journeys[0].stages;
+    const history = store.journeys[0].history;
+    store = advance(store, 100, 1100, 1);
+    store = advance(store, 0, 1100, 0.25);
+    expect(store.journeys[0].elapsed).toBe(100);
+    store = advance(store, 200, 1300, 0.25);
+    expect(store.journeys[0].elapsed).toBe(150);
+    store = advance(store, 200, 1500, 0.5);
+    expect(store.journeys[0].elapsed).toBe(250);
+    expect(store.journeys[0].stages).toBe(stages);
+    expect(store.journeys[0].history).toBe(history);
+    store = advance(store, 70, 1570, 1);
+    expect(route(store)).toBe('http');
+    expect(store.journeys[0].elapsed).toBe(0);
+    expect(store.journeys[0].stages.map(stage => stage.route)).toEqual(['http', 'success']);
+  });
+  it('keeps zero-delta freezing and at most one queued transition per painted frame', () => {
+    let store = advance(success(boot(), 'req-1', 1), 100, 1100, 0.25);
+    const frozen = advance(store, 0, 5000, 0.25);
+    expect(frozen.journeys).toEqual(store.journeys);
+    expect(frozen.clock).toBe(5000);
+    expect(advance(store, -100, 5000, 0.25).journeys).toEqual(store.journeys);
+    store = advance(frozen, 100000, 105000, 0.25);
+    expect(route(store)).toBe('http');
+    expect(store.journeys[0].completed).toBe(false);
+    expect(store.journeys[0].elapsed).toBe(0);
+  });
+  it('never fabricates completion at any supported rate without an observed terminal', () => {
+    let initial = ingest(boot(), event(1, 'REQUEST_STARTED'));
+    initial = ingest(initial, event(2, 'ATTEMPT_STARTED', { attemptId: 'req-1:1', index: 1 }));
+    for (const rate of [1, 0.5, 0.25]) {
+      let store = initial;
+      for (let i = 0; i < 10; i++) store = advance(store, 10000, 100000, rate);
+      expect(route(store)).toBe('http');
+      expect(store.journeys[0].completed).toBe(false);
+      expect(store.live).toBe(initial.live);
+      expect(store.live!.histories[0].outcome).toBeUndefined();
+    }
+  });
+});
+
 describe('minimum visible journeys, independent of HTTP timing', () => {
   it('same-timestamp zero-latency success paints inlet, then HTTP, then observed terminal', () => {
     let store = success(boot(), 'req-1', 1);

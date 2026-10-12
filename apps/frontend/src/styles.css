@@ -62,8 +62,11 @@ h1, h2, h3, p { margin: 0; }
 .instrument-layout { display: grid; grid-template-columns: minmax(0, 1fr) 308px; gap: 24px; align-items: start; }
 .figure-column { min-width: 0; }
 .figure-toolbar { min-height: 46px; display: flex; align-items: center; gap: 12px; padding-bottom: 12px; }
-.live-readout { display: flex; margin-right: auto; align-items: center; }
+.live-readout { display: flex; flex-direction: column; margin-right: auto; align-items: flex-start; gap: 2px; }
 .live-readout .eyebrow { color: var(--cyan); font-size: 10px; }
+.visual-speed-help { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.visual-speed-control { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.visual-speed-control select { background: transparent; border: 1px solid var(--line); border-radius: 5px; color: var(--ink); padding: 6px 8px; font: 11px var(--font-mono); }
 .tool-button { color: var(--muted); border: 1px solid transparent; border-radius: 5px; background: transparent; font-size: 11px; padding: 7px 8px; white-space: nowrap; }
 .tool-button:hover { background: #23313a; color: var(--ink); }
 .tool-button[aria-pressed="true"] { color: var(--amber); border-color: #615441; }
@@ -233,8 +236,11 @@ td { padding: 11px 9px; border-bottom: 1px solid #24303a; vertical-align: top; }
    history from the viewBox so height-limited projectors enlarge the mechanism. */
 .focus-mode .figure-column { max-width: min(100%, calc((100vh - 240px) * 1060 / 530)); margin-inline: auto; }
 .focus-mode .figure-toolbar { min-height: 40px; padding-bottom: 8px; }
+/* Keep the visible helper inline so height-limited Focus retains its toolbar budget. */
+.focus-mode .live-readout { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 12px; }
 .focus-mode .figure-footer { padding: 8px 0; }
-.focus-mode .tool-button, .focus-mode .focus-controls .button,
+.focus-mode .visual-speed-control, .focus-mode .visual-speed-control select,
+.focus-mode .visual-speed-help, .focus-mode .tool-button, .focus-mode .focus-controls .button,
 .focus-mode .focus-controls input, .focus-mode .live-readout .eyebrow,
 .focus-mode .legend, .focus-mode .live-state, .focus-mode .connection-label { font-size: 13px; }
 .focus-controls { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 9px; padding: 12px; border-top: 1px solid var(--line); }

@@ -6,9 +6,11 @@ import { Dock } from './Dock';
 import { Machine, PARTS, type Part } from './Machine';
 import { Timeline } from './Timeline';
 import { useLab } from './useLab';
+import { normalizeVisualSpeed, VISUAL_SPEEDS, type VisualSpeed } from './model';
 
 export function App() {
-  const lab = useLab();
+  const [visualSpeed, setVisualSpeed] = useState<VisualSpeed>(1);
+  const lab = useLab(visualSpeed);
   const [focus, setFocus] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [inspect, setInspect] = useState<Part>('gate');
@@ -114,7 +116,15 @@ export function App() {
     <section id="instrument" className="instrument-layout" aria-label="Protection lab">
       <div className="figure-column">
         <div className="figure-toolbar">
-          <div className="live-readout"><span className="eyebrow">LIVE / OBSERVED JOURNEYS</span></div>
+          <div className="live-readout"><span className="eyebrow">LIVE / OBSERVED JOURNEYS</span>
+            <span id="visual-speed-help" className="visual-speed-help">Visual only; real HTTP timing is unchanged.</span>
+          </div>
+          <div className="visual-speed-control"><label htmlFor="visual-speed">Visual speed</label>
+            <select id="visual-speed" data-testid="visual-speed" aria-describedby="visual-speed-help" value={visualSpeed}
+              onChange={event => setVisualSpeed(normalizeVisualSpeed(Number(event.target.value)))}>
+              {VISUAL_SPEEDS.map(rate => <option key={rate} value={rate}>{rate}×</option>)}
+            </select>
+          </div>
           <button ref={focusButton} className="tool-button focus-button" data-testid="focus-toggle" aria-pressed={focus}
             onClick={() => setFocus(!focus)}>{focus ? 'Exit Focus' : 'Focus View'} <span aria-hidden="true">{focus ? '↙' : '↗'}</span></button>
         </div>

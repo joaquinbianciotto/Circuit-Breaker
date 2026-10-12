@@ -32,15 +32,15 @@ Hover, click or keyboard-focus a component to inspect its purpose. Inspection ne
 
 ### Always live, with minimum visible stages
 
-There are no pause, speed or manual catch-up controls. Backend observations update immediately; each request has a separate visual journey. Even zero-latency success starts at **REQUEST IN**, then HTTP, then its observed terminal. A rejection travels inlet → shunt without HTTP. Retries retain the logical ID and return directly to HTTP without another admission.
+Choose **Visual speed** 1× (default), 0.5× or 0.25× to follow the request route more slowly. The native selector and its visual-only helper stay available in normal and Focus View. Changes preserve current journey progress, identity and queued stages; they do not restart the event stream. The choice lasts only for the mounted app, with no persistence. There are no pause, replay or manual catch-up controls. Backend observations update immediately; each request has a separate visual journey. Even zero-latency success starts at **REQUEST IN**, then HTTP, then its observed terminal. A rejection travels inlet → shunt without HTTP. Retries retain the logical ID and return directly to HTTP without another admission.
 
-Minimum visible dwell is 320 ms at inlet, 360 ms per HTTP stage, 180 ms at WAIT, 220 ms for retry return and 600 ms at a terminal. These are presentation durations, **not HTTP latency, backoff or timeout measurements**. No elapsed visual time invents an outcome. The timeout dial uses actual attempt timestamps; completed readouts show actual elapsed time.
+At 1×, minimum visible dwell is 320 ms at inlet, 360 ms per HTTP stage, 180 ms at WAIT, 220 ms for retry return and 600 ms at a terminal. At 0.5× these durations double; at 0.25× they quadruple. These are presentation durations, **not HTTP latency, backoff or timeout measurements**. No elapsed visual time invents an outcome. The timeout dial uses actual attempt timestamps; completed readouts show actual elapsed time.
 
 All unplayed journeys survive completion, REST refresh and reconnect catch-up. Only after their terminal dwell may completed markers be trimmed to the latest four. Bootstrap shows existing snapshot stages without manufacturing engine events; reset/epoch replacement clears old-generation journeys. The visible rolling-ledger widget is removed; backend rolling protection metrics and policy remain unchanged.
 
 ### Projection, mobile and reduced motion
 
-**Focus View** removes the dock, history and explanatory text, expands the plate and retains Send / Batch / Exit controls. Escape exits and returns keyboard focus to the toggle. On narrow mobile screens, the schematic scrolls horizontally to retain readable component labels; controls and records reflow below it without overflowing the page.
+**Focus View** removes the dock, history and explanatory text, expands the plate and retains Send / Batch / Exit and Visual speed controls with the visual-only helper. Escape exits and returns keyboard focus to the toggle. On narrow mobile screens, the schematic scrolls horizontally to retain readable component labels; controls and records reflow below it without overflowing the page.
 
 System/local fonts require no CDN. CSS and JavaScript both honor `prefers-reduced-motion`: no traveling pulse or timeout flash, but static stage markers, outcomes, readouts and controls remain functional. One polite status region announces connection/gate/control changes, never animation frames.
 
@@ -79,7 +79,7 @@ npm audit --json
 npm audit --omit=dev --json
 ```
 
-Frontend model/topology tests cover ordering, gaps, duplicates, reset/retired epochs, stale snapshots, same-timestamp zero-latency success, ten-request journeys, refresh/catch-up retention, retry identity, rejection without HTTP and authoritative timeout/recovery clamping. Demo tests cover exact sequential actions, stop-after-admission and management conflict handling.
+Frontend model/topology tests cover ordering, gaps, duplicates, reset/retired epochs, stale snapshots, same-timestamp zero-latency success, ten-request journeys, refresh/catch-up retention, retry identity, rejection without HTTP and authoritative timeout/recovery clamping. Deterministic visual-speed tests cover default/unsupported-rate fallback, half/quarter-speed duration, continuous rate changes, unchanged authoritative clocks/outcomes, zero-delta freezing and no invented completion. Demo tests cover exact sequential actions, stop-after-admission and management conflict handling.
 
 An optional native Chromium check uses an **already installed** Playwright module, launches only its own processes on isolated ports, refuses occupied ports and closes all launched processes/browser contexts:
 
@@ -91,7 +91,15 @@ node apps/frontend/verify/browser-smoke.mjs "$(npm root -g)/@playwright/cli/node
 
 To check the **existing production Docker stack** instead, append `--docker` to the same command. This mode uses http://localhost:3000, resets lab data, checks browser offline/online and generation replacement **without restarting containers**. Node `npm run verify:compose` separately checks Last-Event-ID replay through nginx. Production mode captures desktop, 1920×1080-viewport focus, reduced-motion and 390 px mobile screenshots as `docker-*.png`, then restores defaults and leaves containers running.
 
-Artifacts stay in ignored `apps/frontend/.verification/`. The check uses no mocked outcomes. It verifies real success, timeout/upstream cancellation, identified WAIT and feedback-path coordinates, zero-latency single and ten-request coordinate journeys, four completed failures/OPEN, inlet/shunt rejection without HTTP, always-live gate state, exclusive concurrent recovery probe, full Auto Demo, real policy PATCH, no-request hover, browser offline controls, native Last-Event-ID reconnect after an owned backend restart, generation replacement, focus/Escape, keyboard inspection, reduced motion and 390 px page containment.
+Artifacts stay in ignored `apps/frontend/.verification/`. The check uses no mocked outcomes. Visual-speed assertions check native options/default, quarter-speed inlet timing from collected coordinates, unchanged SSE lifecycle and retained history, plus the selector/helper and quarter-speed journeys in Focus. These checks pass in the isolated native T2 run below. It also verifies real success, timeout/upstream cancellation, identified WAIT and feedback-path coordinates, zero-latency single and ten-request coordinate journeys, four completed failures/OPEN, inlet/shunt rejection without HTTP, always-live gate state, exclusive concurrent recovery probe, full Auto Demo, real policy PATCH, no-request hover, browser offline controls, native Last-Event-ID reconnect after an owned backend restart, generation replacement, focus/Escape, keyboard inspection, reduced motion and 390 px page containment.
+
+### Visual-speed T2 native verification
+
+`npm run test:frontend` passes **33 tests**; `npm run build -w @resilience/frontend -- --emptyOutDir false` passes without deleting existing output. The full native Chromium smoke passes using the existing Playwright module and owned services on ports **3100–3102**, confirmed free before and after. It covers quarter-speed journeys in normal/Focus views, unchanged HTTP/SSE behavior, Focus at 1366×768 and 1920×1080, Escape/focus restoration, reduced motion, keyboard inspection, 390 px mobile containment and **zero unexpected console/page errors**. Screenshots are in `apps/frontend/.verification/`.
+
+Observed browser RED: the two-line visual-speed readout raised the Focus toolbar from **43.5 px to 49 px**. After the reconnect notice, the absolutely positioned `.sr-only` live-status region ended at **y=769.5**, making the page **770 px** tall at 1366×768. Temporarily restoring the pre-speed toolbar layout made the same page fit, confirming a candidate-caused regression. The bounded fix keeps the helper inline in Focus, with wrapping available; it does not hide overflow or change the circuit scale. GREEN: page dimensions are **1366×768 / 1920×1080**, with no clipped labels, components/label collisions or clipped toolbar content. Minimum major-label sizes remain **16.94 / 26.94 px**, annotations **13.95 / 22.19 px**, and controls **13 px**; all existing thresholds are unchanged.
+
+One corrected-layout run reached the final console check but failed on a 500; the Vite log recorded `/api/snapshot` ECONNRESET during the owned backend restart. The unchanged assertion passed on the subsequent full run. No production/Docker access, existing lab-data reset, installation, deployment or physical-projector assessment was performed. This native verification is not production or review approval.
 
 ### Always-live writer validation
 

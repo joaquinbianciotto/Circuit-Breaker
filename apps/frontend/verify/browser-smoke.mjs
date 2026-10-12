@@ -118,7 +118,7 @@ try {
     const collect = () => {
       for (const signal of document.querySelectorAll('[data-testid="signal"]')) {
         const head = signal.querySelector('circle');
-        window.journeyFrames.push({ id: signal.dataset.requestId, route: signal.dataset.route,
+        window.journeyFrames.push({ id: signal.dataset.requestId, route: signal.dataset.route, time: performance.now(),
           attempt: signal.dataset.attemptId, x: Number(head.getAttribute('cx')), y: Number(head.getAttribute('cy')) });
       }
       requestAnimationFrame(collect);
@@ -149,7 +149,16 @@ try {
       }
     }
   };
-  assert.equal(await page.locator('[data-testid="playback-speed"], [data-testid="pause-playback"], [data-testid="live-catch-up"], [data-testid="inspect-meter"], .meter-rim').count(), 0);
+  const visualSpeed = page.getByRole('combobox', { name: 'Visual speed', exact: true });
+  assert.equal(await visualSpeed.count(), 1);
+  assert.equal(await visualSpeed.inputValue(), '1');
+  assert.deepEqual(await visualSpeed.locator('option').evaluateAll(options => options.map(option =>
+    ({ value: option.value, label: option.textContent }))), [
+    { value: '1', label: '1×' }, { value: '0.5', label: '0.5×' }, { value: '0.25', label: '0.25×' },
+  ]);
+  assert.equal(await visualSpeed.getAttribute('aria-describedby'), 'visual-speed-help');
+  assert(await page.locator('#visual-speed-help').isVisible());
+  assert.equal(await page.locator('[data-testid="pause-playback"], [data-testid="live-catch-up"], [data-testid="inspect-meter"], .meter-rim').count(), 0);
   assert(!(await page.getByTestId('machine').textContent()).includes('LIVE BACKEND ROLLING LEDGER'));
   await page.getByRole('button', { name: 'Normal Response', exact: false }).click();
   await settle();
@@ -160,10 +169,27 @@ try {
   results.push('Real success paints REQUEST IN, HTTP and the success socket in order.');
   await reset();
   // Reset restores genuine zero-latency defaults; no visibility latency is added.
+  const streamsBeforeSpeed = streamHeaders.length;
+  await visualSpeed.selectOption('0.5');
+  assert.equal(await visualSpeed.inputValue(), '0.5');
+  await visualSpeed.selectOption('0.25');
   await send();
   const zero = (await snapshot()).histories.at(-1);
   assert.equal((await snapshot()).external.config.latencyMs, 0);
   await assertJourneys([zero]);
+  const inletDuration = id => page.evaluate(id => {
+    const samples = window.journeyFrames.filter(frame => frame.id === id);
+    return samples.find(frame => frame.route === 'http').time - samples.find(frame => frame.route === 'inlet').time;
+  }, id);
+  const defaultInlet = await inletDuration(normal.requestId);
+  const quarterInlet = await inletDuration(zero.requestId);
+  assert(quarterInlet >= 1000 && quarterInlet <= 1600, `Quarter-speed inlet duration: ${quarterInlet}ms`);
+  assert(quarterInlet > defaultInlet * 3 && quarterInlet < defaultInlet * 5, 'Quarter speed visibly slows the same route');
+  assert(zero.finishedAt - zero.startedAt < quarterInlet, 'HTTP completion remains independent of the slower visual inlet');
+  assert.equal(streamHeaders.length, streamsBeforeSpeed, 'Speed changes must not restart SSE');
+  await visualSpeed.selectOption('1');
+  assert((await snapshot()).histories.some(history => history.requestId === zero.requestId), 'Speed changes must retain observed history');
+  results.push('Native Visual speed options slow quarter-speed inlet approximately 4× without restarting SSE or delaying authoritative completion.');
   await reset();
   await page.getByTestId('batch-count').fill('10');
   await send(10);
@@ -311,6 +337,10 @@ try {
   await page.setViewportSize({ width: 1920, height: 1080 });
   await page.getByTestId('focus-toggle').click();
   assert.equal(await page.locator('.dock').count(), 0);
+  assert(await visualSpeed.isVisible());
+  assert(await page.locator('#visual-speed-help').isVisible());
+  assert.equal(await visualSpeed.inputValue(), '1');
+  await visualSpeed.selectOption('0.25');
   assert(await page.getByRole('button', { name: 'Send Batch', exact: true }).count());
   for (const width of [1366, 1920]) {
     await page.setViewportSize({ width, height: width === 1366 ? 768 : 1080 });
@@ -340,18 +370,35 @@ try {
       const clipped = labels.filter(label => label.x < bounds.x || label.right > bounds.right
         || label.y < bounds.y || label.bottom > bounds.bottom
         || label.x < 0 || label.right > innerWidth || label.y < 0 || label.bottom > innerHeight).map(label => label.text);
-      const controls = [...document.querySelectorAll('.focus-controls button, .focus-controls input, .focus-controls select, .focus-button')];
-      return { bounds, majors: Math.min(...labels.filter(label => label.major).map(label => label.font)),
+      const controls = [...document.querySelectorAll('.focus-controls button, .focus-controls input, .visual-speed-control select, .focus-button')];
+      const clippedToolbar = [...document.querySelectorAll('.live-readout span, .visual-speed-control label, .visual-speed-control select, .focus-button')]
+        .filter(element => {
+          const rect = element.getBoundingClientRect();
+          return !rect.width || !rect.height || rect.left < 0 || rect.right > innerWidth
+            || rect.top < 0 || rect.bottom > innerHeight;
+        }).map(element => element.textContent);
+      return { bounds, page: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
+        clippedToolbar, majors: Math.min(...labels.filter(label => label.major).map(label => label.font)),
         annotations: Math.min(...labels.filter(label => !label.major).map(label => label.font)),
         controls: Math.min(...controls.map(element => parseFloat(getComputedStyle(element).fontSize))),
         clipped, collisions, labelCollisions, pageFits: document.documentElement.scrollHeight <= innerHeight
           && document.documentElement.scrollWidth <= innerWidth };
     });
     console.log(`Focus ${width}: ${JSON.stringify(geometry)}`);
+    if (!geometry.pageFits) console.log('Focus overflow diagnostics:', JSON.stringify(await page.evaluate(() =>
+      [...document.querySelectorAll('main, main *')].filter(element => !(element instanceof SVGElement))
+        .flatMap(element => {
+          const rect = element.getBoundingClientRect();
+          if (!rect.width || !rect.height || (rect.bottom <= innerHeight && rect.right <= innerWidth)) return [];
+          const style = getComputedStyle(element);
+          return [{ tag: element.tagName, class: element.className, top: rect.top, bottom: rect.bottom,
+            left: rect.left, right: rect.right, position: style.position, margin: style.margin }];
+        }))));
     assert(geometry.majors >= 16, `Focus ${width} major labels must render at least 16px (actual ${geometry.majors.toFixed(2)}px)`);
     assert(geometry.annotations >= 12, `Focus ${width} core annotations must render at least 12px`);
     assert(geometry.controls >= 13, `Focus ${width} minimal controls must render at least 13px`);
     assert(geometry.pageFits, `Focus ${width} must fit the viewport`);
+    assert.deepEqual(geometry.clippedToolbar, [], `Focus ${width} helper and controls must remain visible inside the viewport`);
     assert.deepEqual(geometry.clipped, [], `Focus ${width} labels must remain inside the instrument and viewport`);
     assert.deepEqual(geometry.collisions, [], `Focus ${width} labels must not overlap major components`);
     assert.deepEqual(geometry.labelCollisions, [], `Focus ${width} labels must not overlap one another`);
@@ -360,10 +407,12 @@ try {
   await page.screenshot({ path: screenshot('focus'), fullPage: true });
   await send(1, true);
   await assertJourneys([(await snapshot()).histories.at(-1)]);
-  results.push('Focus View preserves a complete per-request inlet/HTTP/terminal journey.');
+  results.push('Focus View keeps the visual-only helper and speed selector, and paints a complete quarter-speed journey.');
   await page.keyboard.press('Escape');
+  assert.equal(await visualSpeed.inputValue(), '0.25', 'Focus toggles must preserve the selected rate');
   assert(await page.locator('.dock').count());
   assert(await page.getByTestId('focus-toggle').evaluate(element => element === document.activeElement));
+  await visualSpeed.selectOption('1');
   await page.getByTestId('inspect-retry').focus();
   await page.keyboard.press('Enter');
   assert((await page.getByTestId('component-inspection').textContent()).includes('Retry feedback'));
