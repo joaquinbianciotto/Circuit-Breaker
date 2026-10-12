@@ -1,0 +1,27 @@
+{
+  "name": "resilience-lab",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/contracts",
+    "apps/external-api",
+    "apps/backend"
+  ],
+  "engines": {
+    "node": ">=22.20 <23"
+  },
+  "scripts": {
+    "build": "npm run build -w @resilience/contracts && npm run build -w @resilience/external-api && npm run build -w @resilience/backend",
+    "test": "vitest run",
+    "test:engine": "vitest run apps/backend/test/engine.test.ts",
+    "test:api": "vitest run apps/backend/test/api.test.ts apps/backend/test/events.test.ts apps/backend/test/startup.test.ts",
+    "test:external": "vitest run apps/external-api/test/server.test.ts",
+    "dev:backend": "npm run start -w @resilience/backend",
+    "dev:external": "npm run start -w @resilience/external-api"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.6",
+    "typescript": "5.9.2",
+    "vitest": "5.0.3"
+  }
+}

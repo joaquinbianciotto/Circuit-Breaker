@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.env
+apps/frontend/.verification/
+apps/frontend/.playwright-cli/
