@@ -124,7 +124,7 @@ The native upstream uses `http://localhost:3002`: `GET /health`, `GET /config`, 
 
 ## Verification evidence
 
-The original T1 evidence covered 54 core tests. The corrected technical-core suite contains **60 tests** (33 engine, 21 API/events/startup, 6 upstream). Clean-snapshot results are recorded separately; no native review approval is claimed.
+The original T1 evidence covered 54 core tests. The corrected technical-core suite contains **60 tests** (33 engine, 21 API/events/startup, 6 upstream); the full core/frontend suite contains **76 tests**. Clean-snapshot results are recorded separately; no native review approval is claimed.
 
 Observed RED: four pre-engine behavior tests failed on expected success/failure versus the scaffold's rejection. First GREEN: those four passed using real local Fastify HTTP. Additional observed RED/GREEN regressions: stalled HTTP 422 bodies originally retried three times instead of once; Nest originally assigned heartbeat ID `1` instead of leaving the replay cursor unchanged. Both fixes pass their targeted tests. Original T1 focused validation: 54 tests passed (27 engine, 21 API/events/startup, 6 upstream). Expanded deterministic suites cover retries/backoffs, full-body abort, fresh controllers, deadline clamping, inclusive threshold, no-HTTP OPEN, both HALF_OPEN outcomes, stale-action concurrency, mutation 409, proxy timeout, bounded history, replay/gap/generation/deduplication, heartbeats and teardown. Compiled entrypoint tests start **both Node processes** and execute backend-to-upstream HTTP; Nest REST/SSE tests import the actual `tsc` output.
 
@@ -134,7 +134,7 @@ An independent concurrent snapshot run observed **69/70** UI tests passing: the 
 
 Deterministic RED used real Fastify HTTP with a controlled monotonic clock and wait scheduler: after failure at 20.25 ms, a 200 ms backoff was clipped to the 100 ms deadline. Waking at 99.75 ms produced an erroneous `RETRY_STARTED`. GREEN rechecks the wait target, stays pending at that early wake and finishes only at the actual 100 ms deadline, with one HTTP attempt and one logical failure. This proves the admission defect under an early wake, **not** the precise trigger of the original untraced intermittent failure.
 
-Six added cases cover truncated/full/equal/zero backoffs, exhausted budget and shutdown. They assert real upstream call counts, no premature retry/attempt events, one completed logical sample and wait-timer cleanup. All 33 engine tests and the 60-test core suite pass sequentially; existing real-time deadline expectations are unchanged. No shared API/event schema changed.
+Six added cases cover truncated/full/equal/zero backoffs, exhausted budget and shutdown. They assert real upstream call counts, no premature retry/attempt events, one completed logical sample and wait-timer cleanup. All 33 engine tests and the 76-test core/frontend suite pass sequentially; existing real-time deadline expectations are unchanged. No shared API/event schema changed.
 
 Focused commands (build first for compiled API/startup tests):
 

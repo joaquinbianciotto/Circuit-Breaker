@@ -1,35 +1,36 @@
-# Resilience Lab technical core
+# Resilience Lab
 
-Run a real HTTP Circuit Breaker / Timeout / Retry experiment with shared ESM contracts, NestJS/Opossum and a Fastify upstream. State is bounded, in memory and unauthenticated; this is a local teaching lab, not a production gateway.
+Operate a real HTTP Circuit Breaker / Timeout / Retry experiment through an accessible electrical instrument. The final Focus layout and event playback illustrate observed HTTP/SSE behavior, never synthetic outcomes.
 
 ## Quick path
 
-Use Node 22.20+ within Node 22 (verified 22.22.2) and npm.
+Use Node 22.20+ within Node 22 (verified 22.22.2) and npm. Ensure native ports 3000/3001/3002 are free.
 
 ```sh
 npm ci
 npm run build
 npm test
-# Two separate terminals, after building:
+# Three separate terminals, after building:
 npm run dev:external
 npm run dev:backend
+npm run dev:frontend
 ```
 
-Backend: http://localhost:3001; upstream: http://localhost:3002. Both native processes bind all host interfaces: use a trusted local machine/network. Each accepts PORT; backend EXTERNAL_API_URL defaults to http://localhost:3002. Stop each owned process with Ctrl-C. Rebuild after source changes. Contracts build before upstream and backend; their CommonJS entrypoints load the ESM workspace using Node 22 require(ESM). No frontend or container setup is part of this unit.
+Open http://localhost:3000, choose Normal Response and Send Request, or Start Auto Demo. Stop your processes with Ctrl-C; rebuild service changes. Native processes bind all interfaces: use only a trusted local machine/network. This unauthenticated, memory-only teaching lab is not a production gateway. No containers or deployment acceptance helpers are included in this unit.
 
-## Try the real API
+## Read and verify
+
+The LIVE GATE and recorder remain authoritative while playback is slowed or paused. Focus/Escape, keyboard inspection, reduced motion and responsive controls retain real request behavior. Policy changes clear the rolling baseline; reset restores defaults and a fresh replay generation.
+
+- [Engine API and statistics](docs/engine.md)
+- [UI controls, playback and local browser check](docs/ui.md)
+
+Builds cover all four workspaces. The existing suite contains 76 Vitest tests (60 core + 16 frontend). Optional native Chromium smoke uses an already installed Playwright module, exclusively owns ports 3100/3101/3102, and cleans up its processes/browser. It downloads nothing.
 
 ```sh
-curl -X PATCH http://localhost:3001/api/external -H 'content-type: application/json' -d '{"mode":"intermittent"}'
-curl -X POST http://localhost:3001/api/requests -H 'content-type: application/json' -d '{"count":1}'
-curl http://localhost:3001/api/snapshot
-curl -N http://localhost:3001/api/events
+node apps/frontend/verify/browser-smoke.mjs /absolute/path/to/existing/playwright
+npm audit --json
+npm audit --omit=dev --json
 ```
 
-One logical operation contains bounded attempts: 800 ms full-body timeout, two additional retries, 200/400 ms waits, 3000 ms total deadline. The inclusive 50% threshold uses at least four completed operations in a 20 s window. OPEN rejects without HTTP; after 7 s HALF_OPEN admits one non-retrying probe. Ordinary 4xx never retry. Policy mutation clears rolling statistics but preserves lifetime history; reset restores all defaults and changes replay generation. Management conflicts return 409 during active work.
-
-## Verification and reference
-
-The existing technical suite contains 60 tests, including compiled entrypoints and real HTTP/SSE. Run npm test after building. Audit with npm audit --json and npm audit --omit=dev --json; audits are registry evidence, not security approval. Vitest is locked to 5.0.3 and compatible esbuild to 0.28.2.
-
-[Engine API, completed-operation statistics and SSE semantics](docs/engine.md). No push or PR was performed; native review approval is not claimed.
+Vitest 5.0.3 and compatible esbuild 0.28.2 remain locked. Audit is registry evidence, not security approval. No push or PR was performed; native review approval is not claimed.

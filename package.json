@@ -3,16 +3,17 @@
   "private": true,
   "version": "0.1.0",
   "workspaces": [
-    "packages/contracts",
-    "apps/external-api",
-    "apps/backend"
+    "packages/*",
+    "apps/*"
   ],
   "engines": {
     "node": ">=22.20 <23"
   },
   "scripts": {
-    "build": "npm run build -w @resilience/contracts && npm run build -w @resilience/external-api && npm run build -w @resilience/backend",
+    "build": "npm run build -w @resilience/contracts && npm run build -w @resilience/external-api && npm run build -w @resilience/backend && npm run build -w @resilience/frontend",
     "test": "vitest run",
+    "test:frontend": "vitest run apps/frontend/test",
+    "dev:frontend": "npm run dev -w @resilience/frontend",
     "test:engine": "vitest run apps/backend/test/engine.test.ts",
     "test:api": "vitest run apps/backend/test/api.test.ts apps/backend/test/events.test.ts apps/backend/test/startup.test.ts",
     "test:external": "vitest run apps/external-api/test/server.test.ts",
