@@ -183,9 +183,7 @@ export function Machine({ snapshot, journeys, focus = false, selected, inspect, 
       <circle cx="256" cy="300" r="4" /><circle cx="800" cy="300" r="4" />
     </g>
     <text x="86" y="259" className="svg-label">REQUEST IN</text>
-    <text x="86" y="281" className="svg-small">logical admission</text>
     <circle cx="86" cy="300" r="8" className="socket" />
-    <text x="64" y="346" className="svg-small">I / request ID</text>
 
     <g {...partProps('gate')} style={{ color: contactColor }}>
       <rect x="278" y="178" width="174" height="239" rx="10" className="hit-area" />

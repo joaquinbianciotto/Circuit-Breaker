@@ -385,15 +385,17 @@ describe('mutation integrity', () => {
     expect(engine.snapshot().histories[0].outcome).toBe('success');
     expect(engine.configure({ retries: 0 }).retries).toBe(0);
   });
-  it('caps admission at 100 active logical operations with no extra upstream call', async () => {
+  it('delegates capacity rejection to Opossum with no extra upstream call', async () => {
     replacePolicy({ retries: 0, attemptTimeoutMs: 1000, operationDeadlineMs: 1500 });
     await configure({ latencyMs: 100 });
     const pending = Array.from({ length: 100 }, () => engine.run());
     expect(engine.snapshot().metrics.active).toBe(100);
     const overflow = await engine.run();
-    expect(overflow).toMatchObject({ outcome: 'rejected', attempts: 0, reason: 'engine-capacity' });
+    expect(overflow).toMatchObject({ outcome: 'rejected', attempts: 0, reason: 'Semaphore locked' });
+    expect(engine.snapshot().metrics.rollingCalls).toBe(101);
     const completed = await Promise.all(pending);
     expect(completed.every(result => result.outcome === 'success')).toBe(true);
+    expect(engine.snapshot().metrics).toMatchObject({ active: 0, completed: 100, rejected: 1 });
     expect((await metrics()).received).toBe(100);
   });
   it('clears the external observation and timestamp when a successful refresh is followed by failure', async () => {
@@ -463,9 +465,8 @@ describe('mutation integrity', () => {
     expect(reset.external?.metrics.received).toBe(0);
     expect((await engine.run()).outcome).toBe('success');
   });
-  it('reset serializes management and rejects new admissions during its real upstream roundtrip', async () => {
+  it('reset serializes management during its real upstream roundtrip', async () => {
     const reset = engine.reset();
-    expect((await engine.run()).outcome).toBe('rejected');
     expect(() => engine.configure({ retries: 0 })).toThrow(ConflictError);
     await expect(engine.reset()).rejects.toBeInstanceOf(ConflictError);
     const snapshot = await reset;

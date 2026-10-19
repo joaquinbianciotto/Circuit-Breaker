@@ -33,20 +33,15 @@ export class Engine {
   get state(): CircuitState { return this.breaker.state; }
 
   async run(): Promise<LogicalResult> {
-    const context = this.requests.start();
-    let outcome: LogicalResult['outcome'];
-    let reason: string | undefined;
-    try {
-      if (this.management || this.requests.isStopped) throw new Error(this.requests.isStopped ? 'engine-stopped' : 'maintenance');
-      if (this.requests.activeCount > 100) throw new Error('engine-capacity');
-      // One breaker call protects the whole operation, including its retries.
-      await this.breaker.fire(context);
-      outcome = 'success';
-    } catch (error) {
-      reason = error instanceof Error ? error.message : 'unknown-failure';
-      outcome = context.admitted ? 'failure' : 'rejected';
-    }
-    return this.requests.finish(context, outcome, reason);
+    const request = this.requests.start();
+    // Una llamada al circuit breaker proteje toda la operacion, incluyendo retrys y timeout
+    return this.breaker.fire(request)
+      .then(() => this.requests.finish(request, 'success'))
+      .catch(error => this.requests.finish(
+        request,
+        request.admitted ? 'failure' : 'rejected',
+        error instanceof Error ? error.message : 'unknown-failure',
+      ));
   }
 
   configure(value: unknown): Policy {

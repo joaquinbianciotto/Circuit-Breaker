@@ -60,11 +60,12 @@ export class CircuitBreaker {
   shutdown() { this.breaker.shutdown(); }
 
   private createBreaker(): Circuit {
-    const breaker = new Opossum(context => {
+    const executeRequest = async (context: Operation): Promise<void> => {
       context.admitted = true;
       if (context.history.probe) this.probe = context;
-      return this.action(context);
-    }, {
+      await this.action(context);
+    };
+    let options = {
       timeout: false, // Requests owns per-attempt HTTP cancellation and the total deadline.
       errorThresholdPercentage: this.policyValue.errorThresholdPercentage,
       volumeThreshold: this.policyValue.minimumVolume,
@@ -73,7 +74,8 @@ export class CircuitBreaker {
       rollingCountBuckets: 1,
       rollingPercentilesEnabled: false,
       capacity: 100,
-    });
+    }
+    const breaker = new Opossum(executeRequest, options);
     // Opossum emits failure before deciding whether to open; retain its request ID.
     breaker.on('failure', (_error: unknown, _durationMs: number, args: Operation[]) => {
       this.failureContext = args[0] ?? null;

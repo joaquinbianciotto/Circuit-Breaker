@@ -60,14 +60,14 @@ One **logical operation** goes through real Opossum `fire()`. Its protected acti
 - Retry only HTTP 5xx, network/body transport failure or timeout. Known 4xx fails once, including 429 and a 4xx response whose body later times out; it still counts as one logical breaker failure. Oversized bodies fail without retry.
 - Use a monotonic clock for the operation budget; each attempt timeout is clamped to the remaining budget. A retry requires the **full configured backoff** to finish with positive budget left. If the backoff equals or exceeds the budget, wait only to the actual deadline and finish with `operation-deadline`, without another HTTP attempt. Recheck the monotonic target after every timer wake: an early wake cannot shorten either wait. `RETRY_SCHEDULED.backoffMs` describes the bounded wait; `RETRY_STARTED` appears only after an eligible completed wait. Shutdown cancels the wait without retry. No attempt starts after expiration. The default 3000 ms is `3 × 800 + 200 + 400`; overhead consumes that same budget, so the final attempt can have less than 800 ms.
 - OPEN arrivals are rejected by Opossum without HTTP. HALF_OPEN's real `pendingClose` gate synchronously admits exactly one probe. That probe has **one attempt and no retry**. Other arrivals reject even while the probe is pending. Success closes; failure or timeout reopens.
-- Batches launch 1–10 logical operations concurrently and return every expected outcome. They do not turn breaker rejection/failure into an HTTP 500. Global admission is capped at 100 executing operations; excess arrivals reject without HTTP.
+- Batches launch 1–10 logical operations concurrently and return every expected outcome. They do not turn breaker rejection/failure into an HTTP 500. Opossum capacity is 100 executing operations; excess arrivals reject without HTTP with reason `Semaphore locked`.
 
 ### Native Opossum statistics
 
 The configured threshold is passed directly to Opossum; automatic statistical opening is enabled.
 
 1. [`fail()` evaluates `failures / fires * 100 > errorThresholdPercentage`](https://github.com/nodeshift/opossum/blob/v8.5.0/lib/circuit.js#L978-L997) once minimum **call** volume is met. Successful completions do not evaluate statistical opening.
-2. [`call()` emits `fire` before admission](https://github.com/nodeshift/opossum/blob/v8.5.0/lib/circuit.js#L643-L727): pending actions and Opossum OPEN rejections are included. Retry attempts inside one action are not additional calls. Engine maintenance/capacity rejections occur before `fire()` and are not native calls.
+2. [`call()` emits `fire` before admission](https://github.com/nodeshift/opossum/blob/v8.5.0/lib/circuit.js#L643-L727): pending actions and Opossum OPEN rejections are included. Retry attempts inside one action are not additional calls. `Engine.run()` delegates admission directly to `fire()`, including capacity rejections; it has no separate maintenance, stopped-engine or capacity prechecks.
 3. Exactly two failures followed by two successes remain CLOSED at 50%. A subsequent failure produces 3/5 = 60% and opens. A configured 100% threshold does not open at exactly 100% either.
 
 The snapshot reports the active Opossum instance's counters:
@@ -109,7 +109,7 @@ GET/PATCH success is 200; Nest POST success is 201. Validation errors are 400, a
 
 Policy patches reject unknown keys, numeric strings, non-finite values, fractions and out-of-range integers. Bounds: timeout 10–30000 ms; retries 0–2; base backoff 0–5000 ms; deadline 10–90000 ms; threshold 1–100%; minimum volume 1–10000; rolling window 100–300000 ms; recovery 20–60000 ms. Deadline smaller than attempt timeout is intentional and supported.
 
-Policy, upstream-config mutation and reset reject with 409 while engine work/management is active. Management holds a lock across real upstream calls; arrivals during that interval return a maintenance rejection. Each proxied HTTP call has a 1000 ms timeout through JSON body consumption. Upstream reset also rejects if independently initiated upstream work remains active.
+Policy, upstream-config mutation and reset reject with 409 while engine work/management is active. Management holds a lock across real upstream calls to exclude other management changes; work arrivals still go through `fire()` without a maintenance precheck. Each proxied HTTP call has a 1000 ms timeout through JSON body consumption. Upstream reset also rejects if independently initiated upstream work remains active.
 
 **Policy replacement:** preserve lifetime counters, history, events and SSE epoch; shut down the old breaker/timers, clear rolling samples, establish CLOSED, emit a global `CIRCUIT_CLOSED` with reason `policy-replaced`. The mutation response supplies the new policy.
 
