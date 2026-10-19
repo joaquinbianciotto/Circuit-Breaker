@@ -134,7 +134,7 @@ export function Machine({ snapshot, journeys, focus = false, selected, inspect, 
       const remaining = recoveryTimer(store.view, now);
       recoveryValue.current.textContent = store.view.state === 'OPEN'
         ? remaining ? `${(remaining / 1000).toFixed(1)} s to probe` : 'AWAIT HALF_OPEN'
-        : store.view.state === 'HALF_OPEN' ? 'SINGLE PROBE / NO RETRY' : 'ADMISSION ENABLED';
+        : store.view.state === 'HALF_OPEN' ? 'SINGLE PROBE' : '';
     }
   }), [subscribe, journeys, watched, reduced]);
 
@@ -226,26 +226,20 @@ export function Machine({ snapshot, journeys, focus = false, selected, inspect, 
       <circle cx="800" cy="300" r="7" className="socket" />
       <path d="M568 270 H768 M568 330 H768" className="assembly-rails" />
       <text x="674" y="365" textAnchor="middle" className="svg-label">HTTP ATTEMPT</text>
-      <text x="674" y="393" textAnchor="middle" className="svg-small">backend fetch → upstream /work</text>
-      <text x="674" y="422" textAnchor="middle" className="svg-readout">{watched?.attempts.length ? `${shortId(watched.requestId)} / A${watched.attempts.at(-1)!.index}` : 'AWAITING HTTP ATTEMPT'}</text>
       <text x="674" y="447" textAnchor="middle" className="svg-small">{watched?.attempts.at(-1)?.outcome === 'timeout' ? 'ABORT OBSERVED · HTTP CANCELLED'
         : (watched?.attempts.at(-1)?.index ?? 0) > 1 ? `RETRY ${watched!.attempts.at(-1)!.index - 1} · SAME LOGICAL REQUEST`
-        : watched?.probe ? 'ONE PROBE · NO RETRIES'
-        : 'Attempt IDs correlate with the real upstream'}</text>
+        : watched?.probe ? ''
+        : ''}</text>
     </g>
 
     <circle cx="974" cy="236" r="8" className="socket terminal-success" />
     <text x="886" y="206" className="svg-label success-text">SUCCESS</text>
-    <text x="886" y="264" className="svg-small">completed operation</text>
     <circle cx="974" cy="386" r="8" className="socket terminal-failure" />
     <text x="886" y="356" className="svg-label failure-text">FAILURE</text>
-    <text x="886" y="415" className="svg-small">exhausted / non-retryable</text>
-
     <g {...partProps('retry')}>
       <rect x="454" y="471" width="368" height="107" rx="10" className="hit-area" />
       <path d="M599 503 V537 M614 503 V537" className="capacitor" />
       <text x="610" y="492" textAnchor="middle" className="svg-label retry-text">WAIT / RETRY</text>
-      <text x="610" y="556" textAnchor="middle" className="svg-small">{snapshot.policy.backoffMs} / {snapshot.policy.backoffMs * 2} ms · same logical request</text>
       <path d="M480 419 l-6 10 M480 419 l6 10" className="feedback-direction" />
       <text x="808" y="475" className="svg-small">5xx / network / abort</text>
     </g>
@@ -253,7 +247,6 @@ export function Machine({ snapshot, journeys, focus = false, selected, inspect, 
       <rect x="270" y="582" width="733" height="57" rx="8" className="hit-area" />
       <path d="M293 603 l10 18 M303 603 l-10 18" className="reject-symbol" />
       <circle cx="974" cy="612" r="8" className="socket terminal-failure" />
-      <text x="343" y="600" className="svg-small">REJECTION SHUNT / NO HTTP</text>
       <text x="877" y="598" className="svg-label failure-text">REJECT</text>
     </g>
 
