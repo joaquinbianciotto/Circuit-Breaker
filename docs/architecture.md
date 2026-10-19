@@ -23,19 +23,21 @@ Frontend runtime is nginx, not Vite. Its `/api/` location retains paths, query c
 
 ## One operation, bounded HTTP attempts
 
-[Engine source](../apps/backend/src/engine.ts) calls real Opossum `fire()` once per logical request. Its action performs attempts and backoffs internally. Each fresh AbortController covers headers **and full body consumption**, capped at 64 KiB, with cleanup on every settlement. A monotonic total deadline bounds attempt time and waits; elapsed overhead consumes the same budget. Default retries are 2 extra, waits 200/400 ms, timeout 800 ms, deadline 3000 ms.
+[Engine source](../apps/backend/src/engine.ts) is the compact teaching entrypoint. It calls `fire()` once per logical request through the [native Opossum adapter](../apps/backend/src/circuit-breaker.ts). The protected [HTTP request](../apps/backend/src/requests.ts) performs attempts and backoffs internally; [upstream management](../apps/backend/src/external-api.ts) stays outside that protected action. Opossum owns statistical opening as well as admission and recovery; see the [workshop reading path](engine.md#workshop-reading-path).
+
+Each fresh AbortController covers headers **and full body consumption**, capped at 64 KiB, with cleanup on every settlement. A monotonic total deadline bounds attempt time and waits; elapsed overhead consumes the same budget. Default retries are 2 extra, waits 200/400 ms, timeout 800 ms, deadline 3000 ms.
 
 5xx, timeout and network/body failure can retry; ordinary 4xx (including 429 or a later stalled 4xx body) fails once. Oversized bodies do not retry. [Fastify source](../apps/external-api/src/server.ts) records real correlated received/completed/cancelled/active counts and cancels pending latency on client disconnect.
 
-### Inclusive completed-operation statistics
+### Native Opossum statistics
 
-Opossum 8.5.0's [threshold source](https://github.com/nodeshift/opossum/blob/v8.5.0/lib/circuit.js#L978-L997) uses strict `>` and failures/fires, while its [admission source](https://github.com/nodeshift/opossum/blob/v8.5.0/lib/circuit.js#L643-L727) emits fire before rejecting OPEN traffic. Neither denominator nor strictness matches this lab's **≥50% of at least four completed logical operations** contract.
+Opossum 8.5.0's [threshold source](https://github.com/nodeshift/opossum/blob/v8.5.0/lib/circuit.js#L978-L997) evaluates `failures / fires * 100 > threshold` on failures after minimum call volume. Its [admission source](https://github.com/nodeshift/opossum/blob/v8.5.0/lib/circuit.js#L643-L727) emits `fire` before OPEN rejection: pending and rejected calls belong to the denominator; HTTP retry attempts inside one action do not.
 
-The engine disables automatic CLOSED statistical opening (`errorThresholdPercentage: 101`) and maintains a bounded rolling completed ledger. At inclusive threshold it calls actual Opossum `open()`. Attempts, pending work and rejected admissions are excluded. Opossum still owns OPEN rejection, recovery timer, HALF_OPEN pendingClose exclusion and probe success/failure transitions. Two failures plus two successes open at the fourth completion, not after a fifth failure.
+The adapter passes the configured threshold directly to Opossum and exposes its native counters; there is no custom ledger or completed-outcome opening calculation. At the default 50%, two failures plus two successes remain CLOSED. A subsequent failure produces 60% and opens. `rollingCalls` is `fires`; `rollingCompleted` is successes plus failures; `rollingFailed` is failures; `errorPercentage` uses calls, not completed outcomes. One native bucket rotates periodically rather than expiring individual completed samples.
 
 ### Instance fencing protects recovery
 
-Opossum's [success listener](https://github.com/nodeshift/opossum/blob/v8.5.0/lib/circuit.js#L348-L353) closes any HALF_OPEN instance, even for an old CLOSED action. On opening, the engine shuts down/detaches that instance and opens a fresh real Opossum instance. Old promises still settle, but cannot close/reopen the new probe gate. Shutdown removes old listeners/statistics/recovery timers. Generation fences prevent late completions after successful recovery from contaminating the new baseline. HALF_OPEN allows one probe with **one attempt, no retries**; concurrent callers reject without upstream traffic.
+Opossum's [success listener](https://github.com/nodeshift/opossum/blob/v8.5.0/lib/circuit.js#L348-L353) closes any HALF_OPEN instance, even for an old CLOSED action. On opening, the adapter shuts down/detaches that instance and opens a fresh real Opossum instance. Old promises still settle, but cannot close/reopen the new probe gate. Shutdown removes old listeners and stops old statistics/recovery timers; it does not erase the detached instance's existing counters. Active native statistics restart on replacement, while lifetime request counters keep all outcomes. A successful close does not reset the active instance's statistics. HALF_OPEN allows one probe with **one attempt, no retries**; concurrent callers reject without upstream traffic.
 
 ## Stream and memory boundaries
 

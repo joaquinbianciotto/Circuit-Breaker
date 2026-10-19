@@ -1,8 +1,8 @@
 // Optional native-browser verification. Uses an already installed Playwright module;
 // no downloads, mocks or global package installation. --docker uses the existing
-// production stack at localhost:3000, never starts/stops/restarts a container.
+// production stack selected by Compose, never starts/stops/restarts a container.
 import { createRequire } from 'node:module';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { mkdir, open } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import assert from 'node:assert/strict';
@@ -16,7 +16,9 @@ const runner = process.argv[2];
 if (!runner) throw new Error('Pass the absolute path to an existing Playwright module.');
 const { chromium } = require(runner);
 const production = process.argv[3] === '--docker';
-const base = production ? 'http://localhost:3000' : 'http://localhost:3100';
+const base = production
+  ? `http://${execFileSync('docker', ['compose', 'port', 'frontend', '80'], { cwd: root, encoding: 'utf8', timeout: 15000 }).trim()}`
+  : 'http://localhost:3100';
 const screenshot = name => resolve(artifact, `${production ? 'docker-' : ''}${name}.png`);
 const children = [];
 const handles = [];
@@ -79,6 +81,10 @@ try {
   await network.send('Network.setCacheDisabled', { cacheDisabled: true });
   await page.goto(base);
   await page.waitForFunction(() => document.querySelector('[data-testid="connection-state"]')?.textContent.includes('CONNECTED'));
+  assert.match(await page.locator('.policy-summary').textContent(), />50%/);
+  assert.match(await page.getByTestId('policy-errorThresholdPercentage').locator('..').textContent(), /Error threshold \(>\)/);
+  assert.match(await page.getByTestId('policy-minimumVolume').locator('..').textContent(), /Minimum calls/);
+  results.push('Policy controls show the native strict threshold and minimum call count.');
   const snapshot = () => page.evaluate(async () => (await fetch('/api/snapshot')).json());
   const until = async predicate => {
     const deadline = Date.now() + 30000;
@@ -250,7 +256,8 @@ try {
   await send(4);
   const opened = await snapshot();
   assert.equal(opened.state, 'OPEN');
-  assert.equal(opened.metrics.rollingCompleted, 4);
+  assert.equal(opened.metrics.completed, 4);
+  assert.equal(opened.metrics.failed, 4);
   assert.equal(await page.getByTestId('machine').getAttribute('data-state'), 'OPEN');
   assert((await page.getByTestId('live-state').textContent()).includes('OPEN'));
   await assertJourneys(opened.histories);
@@ -259,6 +266,7 @@ try {
   const rejected = await snapshot();
   assert.equal(rejected.histories.at(-1).outcome, 'rejected');
   assert.equal(rejected.external.metrics.received, received);
+  assert.equal(rejected.metrics.rollingCalls, opened.metrics.rollingCalls + 1);
   await assertJourneys([rejected.histories.at(-1)]);
   results.push('Gate stays live OPEN; rejected request paints inlet then shunt without HTTP.');
   await page.waitForFunction(() => document.querySelector('[data-testid="machine"]')?.getAttribute('data-state') === 'OPEN');
@@ -285,7 +293,7 @@ try {
   await page.getByRole('button', { name: 'Apply Policy', exact: true }).click();
   await settle();
   assert.equal((await snapshot()).policy.attemptTimeoutMs, 850);
-  assert.equal((await snapshot()).metrics.rollingCompleted, 0);
+  assert.equal((await snapshot()).metrics.rollingCalls, 0);
   const editor = page.getByTestId('external-editor');
   await editor.locator('summary').click();
   await editor.getByLabel(/^Mode/).selectOption('fail');

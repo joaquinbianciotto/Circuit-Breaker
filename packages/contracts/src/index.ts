@@ -98,6 +98,7 @@ export interface EngineMetrics {
   failed: number;
   rejected: number;
   active: number;
+  rollingCalls: number;
   rollingCompleted: number;
   rollingFailed: number;
   errorPercentage: number;

@@ -1,6 +1,26 @@
 # Resilience engine
 
-The memory-only technical core runs with the event-driven frontend in exactly three Compose containers. [Docker quickstart](../README.md), [architecture](architecture.md) and [observed verification](verification.md) describe the assembled lab. The deadline/backoff correction below is verified locally, not deployed to the running presentation stack; no native review approval is claimed.
+The memory-only technical core runs with the event-driven frontend in exactly three Compose containers. [Docker quickstart](../README.md), [architecture](architecture.md) and [observed verification](verification.md) describe the assembled lab. The native-statistics replacement is checked against an isolated Compose project; the running presentation stack is not restarted and no native code-review approval is claimed.
+
+## Workshop reading path
+
+Start with [`engine.ts`](../apps/backend/src/engine.ts), especially its constructor and `run()`:
+
+1. The constructor protects `requests.perform(context)` with a circuit breaker.
+2. `run()` starts one logical request and calls `breaker.fire(context)` exactly once. OPEN rejects it without HTTP; HALF_OPEN admits one probe.
+3. `requests.finish()` records the logical result and publishes the events used by the simulator. Individual retry failures do not become separate breaker samples.
+
+The teaching entrypoint is shorter because unrelated responsibilities are separated, **not because functionality was removed**:
+
+| Module | Read it when explaining |
+| --- | --- |
+| [`engine.ts`](../apps/backend/src/engine.ts) | Protected operation, admission and public simulator orchestration |
+| [`circuit-breaker.ts`](../apps/backend/src/circuit-breaker.ts) | Native Opossum thresholds/statistics, admission/recovery and late-completion isolation |
+| [`requests.ts`](../apps/backend/src/requests.ts) | HTTP attempts, retries, deadlines, cancellation, request histories and counters |
+| [`external-api.ts`](../apps/backend/src/external-api.ts) | Upstream configuration, reset and observed metrics |
+| [`events.ts`](../apps/backend/src/events.ts) | SSE replay, cursors, retention and heartbeat cleanup |
+
+`CircuitBreaker` delegates statistical opening to Opossum 8.5.0: there is no custom ledger or manual statistical `open()`. Default numeric policy values, HTTP controls and SSE transport stay intact; snapshot metrics now expose native calls as well as completed outcomes. Recovery isolation remains simulator-specific. Continue below for the native sampling semantics.
 
 ## Run the technical core
 
@@ -31,8 +51,8 @@ One **logical operation** goes through real Opossum `fire()`. Its protected acti
 | Additional retries | 2 maximum |
 | Retry waits | 200 ms, then 400 ms |
 | Whole-operation deadline | 3000 ms |
-| Opening error percentage | **at least** 50% |
-| Minimum completed volume | 4 |
+| Opening error percentage | **greater than** 50% |
+| Minimum calls to `fire()` | 4 |
 | Rolling window | 20000 ms |
 | OPEN recovery wait | 7000 ms |
 
@@ -42,14 +62,24 @@ One **logical operation** goes through real Opossum `fire()`. Its protected acti
 - OPEN arrivals are rejected by Opossum without HTTP. HALF_OPEN's real `pendingClose` gate synchronously admits exactly one probe. That probe has **one attempt and no retry**. Other arrivals reject even while the probe is pending. Success closes; failure or timeout reopens.
 - Batches launch 1–10 logical operations concurrently and return every expected outcome. They do not turn breaker rejection/failure into an HTTP 500. Global admission is capped at 100 executing operations; excess arrivals reject without HTTP.
 
-### Why the completed ledger exists
+### Native Opossum statistics
 
-Opossum 8.5.0 does not implement the requested statistical meaning:
+The configured threshold is passed directly to Opossum; automatic statistical opening is enabled.
 
-1. [`fail()` uses `failures / fires` and strict `>`](https://github.com/nodeshift/opossum/blob/v8.5.0/lib/circuit.js#L978-L997), not inclusive `>=`.
-2. [`call()` emits `fire` before the OPEN gate](https://github.com/nodeshift/opossum/blob/v8.5.0/lib/circuit.js#L643-L727), so its denominator includes pending actions and OPEN rejections.
+1. [`fail()` evaluates `failures / fires * 100 > errorThresholdPercentage`](https://github.com/nodeshift/opossum/blob/v8.5.0/lib/circuit.js#L978-L997) once minimum **call** volume is met. Successful completions do not evaluate statistical opening.
+2. [`call()` emits `fire` before admission](https://github.com/nodeshift/opossum/blob/v8.5.0/lib/circuit.js#L643-L727): pending actions and Opossum OPEN rejections are included. Retry attempts inside one action are not additional calls. Engine maintenance/capacity rejections occur before `fire()` and are not native calls.
+3. Exactly two failures followed by two successes remain CLOSED at 50%. A subsequent failure produces 3/5 = 60% and opens. A configured 100% threshold does not open at exactly 100% either.
 
-We disable **automatic CLOSED threshold calculation only** with `errorThresholdPercentage: 101`. An exact millisecond-bucket rolling ledger counts completed logical successes/failures, never attempts, pending work or rejected admissions. At minimum volume and inclusive percentage, it calls real `Opossum.open()`. This is not a separate synthetic breaker: Opossum owns OPEN, the recovery timer, HALF_OPEN exclusion, probe transitions and admission. The test for two failures followed by two successes opens on the fourth completed operation, at exactly 50%.
+The snapshot reports the active Opossum instance's counters:
+
+| Metric | Native source |
+| --- | --- |
+| `rollingCalls` | `stats.fires`, including pending actions and native rejections |
+| `rollingCompleted` | `stats.successes + stats.failures` |
+| `rollingFailed` | `stats.failures` |
+| `errorPercentage` | `stats.failures / stats.fires * 100`, or 0 when there are no calls |
+
+Lifetime `completed`, `succeeded`, `failed`, `rejected` and `active` still describe real logical operations independently of that window. Native statistics use one periodically rotating bucket: samples expire together, and a call and its later outcome can land in different buckets. There is no exact per-completion timestamp ledger.
 
 ### Concurrency fence: an old success is not a probe
 
@@ -57,7 +87,7 @@ The installed source's [`success` listener closes any HALF_OPEN breaker](https:/
 
 Every opening therefore shuts down/detaches that instance and immediately opens a fresh **real Opossum** instance. Already-admitted actions settle through their old promises; shutdown removes their listeners and old recovery/statistics timers. Only the fresh instance's controlled probe can affect its recovery state. Its real reset timer starts on opening. Tests place both a late old success and a late old failure inside another operation's pending probe and verify that neither changes the gate.
 
-Lifetime counters keep all admitted outcomes. The rolling ledger includes late completions during OPEN/HALF_OPEN; successful recovery clears the rolling baseline. Older-generation completions after recovery cannot pollute that new baseline. A successful probe itself becomes the first new completed sample.
+Lifetime counters keep all admitted outcomes, including old actions that settle late. Native counters belong only to the active instance: they start fresh on the isolation replacement at OPEN and on policy replacement. Detached old actions cannot update the new instance's counters. A successful probe adds a native success, but Opossum `close()` does **not** reset its statistics; OPEN rejections already recorded in that instance remain in its denominator until bucket rotation. Use lifetime history, not the post-opening native window, to inspect what originally tripped the circuit.
 
 ## Backend API
 
@@ -122,9 +152,11 @@ Inside Compose, relative to `http://external-api:3002` (not published to the hos
 - `intermittent: probability` uses the configured failure rate and a seeded xorshift sequence. Reset restores the seed; rates 0 and 1 guarantee success and failure respectively. Alternating intentionally ignores probability.
 - Metrics count received/completed/cancelled/active and preserve correlated logs. Client abort is detected with **response** `close && !writableEnded`, cancels the delay timer and counts cancelled rather than completed. Capacity rejection is an immediate completed 503, included in received/completed metrics.
 
-## Verification evidence
+## Historical test-first evidence
 
-The original **T1** evidence covered 54 core tests. The corrected suites contain **60 core tests** (33 engine, 21 API/events/startup, 6 upstream), **76 Vitest tests** including the frontend, and **3 Node helper tests**. Historical Docker/proxy/browser evidence is recorded separately in [verification](verification.md); it does not verify this correction in Docker. No native review approval is claimed.
+The following T1 and deadline/backoff results describe earlier local tests, not the native-statistics candidate. Current proof uses the [Compose-only workflow](verification.md#current-compose-only-workflow), whose rebuilt stack passed 16 acceptance groups; no host unit suites were run for the native replacement. No native code-review approval is claimed.
+
+The original **T1** evidence covered 54 core tests. Later corrected suites contained **60 core tests** (33 engine, 21 API/events/startup, 6 upstream), **76 Vitest tests** including the frontend, and **3 Node helper tests**. Those historical results are retained separately from the current Compose observations.
 
 Observed RED: four pre-engine behavior tests failed on expected success/failure versus the scaffold's rejection. First GREEN: those four passed using real local Fastify HTTP. Additional observed RED/GREEN regressions: stalled HTTP 422 bodies originally retried three times instead of once; Nest originally assigned heartbeat ID `1` instead of leaving the replay cursor unchanged. Both fixes pass their targeted tests. Original T1 focused validation: 54 tests passed (27 engine, 21 API/events/startup, 6 upstream). Expanded deterministic suites cover retries/backoffs, full-body abort, fresh controllers, deadline clamping, inclusive threshold, no-HTTP OPEN, both HALF_OPEN outcomes, stale-action concurrency, mutation 409, proxy timeout, bounded history, replay/gap/generation/deduplication, heartbeats and teardown. Compiled entrypoint tests start **both Node processes** and execute backend-to-upstream HTTP; Nest REST/SSE tests import the actual `tsc` output.
 
@@ -134,9 +166,9 @@ An independent concurrent snapshot run observed **69/70** UI tests passing: the 
 
 Deterministic RED used real Fastify HTTP with a controlled monotonic clock and wait scheduler: after failure at 20.25 ms, a 200 ms backoff was clipped to the 100 ms deadline. Waking at 99.75 ms produced an erroneous `RETRY_STARTED`. GREEN rechecks the wait target, stays pending at that early wake and finishes only at the actual 100 ms deadline, with one HTTP attempt and one logical failure. This proves the admission defect under an early wake, **not** the precise trigger of the original untraced intermittent failure.
 
-Six added cases cover truncated/full/equal/zero backoffs, exhausted budget and shutdown. They assert real upstream call counts, no premature retry/attempt events, one completed logical sample and wait-timer cleanup. All 33 engine tests and the full 76 + 3 suite pass sequentially; existing real-time deadline expectations are unchanged. No shared API/event schema changed.
+Six added cases cover truncated/full/equal/zero backoffs, exhausted budget and shutdown. They assert real upstream call counts, no premature retry/attempt events, one completed logical sample and wait-timer cleanup. At that time all 33 engine tests and the full 76 + 3 suite passed sequentially; existing real-time deadline expectations were unchanged. No shared API/event schema changed.
 
-Focused commands (build first for compiled API/startup tests):
+Historical focused commands (not run for the current Compose-only verification):
 
 ```sh
 npm run test:engine

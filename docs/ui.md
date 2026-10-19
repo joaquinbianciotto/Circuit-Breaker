@@ -36,7 +36,7 @@ Choose **Visual speed** 1× (default), 0.5× or 0.25× to follow the request rou
 
 At 1×, minimum visible dwell is 320 ms at inlet, 360 ms per HTTP stage, 180 ms at WAIT, 220 ms for retry return and 600 ms at a terminal. At 0.5× these durations double; at 0.25× they quadruple. These are presentation durations, **not HTTP latency, backoff or timeout measurements**. No elapsed visual time invents an outcome. The timeout dial uses actual attempt timestamps; completed readouts show actual elapsed time.
 
-All unplayed journeys survive completion, REST refresh and reconnect catch-up. Only after their terminal dwell may completed markers be trimmed to the latest four. Bootstrap shows existing snapshot stages without manufacturing engine events; reset/epoch replacement clears old-generation journeys. The visible rolling-ledger widget is removed; backend rolling protection metrics and policy remain unchanged.
+All unplayed journeys survive completion, REST refresh and reconnect catch-up. Only after their terminal dwell may completed markers be trimmed to the latest four. Bootstrap shows existing snapshot stages without manufacturing engine events; reset/epoch replacement clears old-generation journeys. There is no separate rolling-ledger widget. Backend protection uses native Opossum calls and strict thresholds; see the [native statistics guide](engine.md#native-opossum-statistics).
 
 ### Projection, mobile and reduced motion
 

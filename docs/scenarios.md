@@ -4,10 +4,10 @@ Open **http://localhost:3000** after `docker compose up --build`. Wait for **ENG
 
 ## Presenter setup
 
-- Begin every baseline with **Reset Simulation** and wait for completion. Defaults: CLOSED, no histories, zero counters, 800 ms timeout, 2 extra retries, 200/400 ms waits, 3000 ms deadline, ≥50% at 4 completed operations, 20 s window, 7 s recovery.
+- Begin every baseline with **Reset Simulation** and wait for completion. Defaults: CLOSED, no histories, zero counters, 800 ms timeout, 2 extra retries, 200/400 ms waits, 3000 ms deadline, >50% after at least 4 calls, 20 s window, 7 s recovery.
 - The instrument is always live. Every new request has minimum visible inlet → HTTP → observed terminal stages; rejection bypasses HTTP and retries never repeat admission. Visible stages can finish after real HTTP completion without extending backend timers. Gate state, timers and records remain authoritative.
 - Configure the scenario in the dock first. **Focus View** enlarges the plate for projection and keeps Send Request / Send Batch / Exit controls; Escape exits. Tab to controls/components; Enter inspects components without HTTP. Focus can be toggled between sends without changing the engine.
-- Expand live logical history for actual outcomes, attempt IDs and durations. Backend rolling ratios below count completed logical operations, not attempts or rejected admissions; there is no visible rolling-ledger widget. Do not count visual pulses as independent requests. Management is held while work is active; wait for the completed notice before resetting/configuring.
+- Expand live logical history for actual outcomes, attempt IDs and durations. Backend error percentages use native failures/calls: pending actions and Opossum rejections count as calls, but HTTP retries do not. There is no custom or visible rolling-ledger widget; active-instance counters restart when recovery isolation replaces that instance. Do not count visual pulses as independent requests. Management is held while work is active; wait for the completed notice before resetting/configuring.
 
 ## 1. Normal — the gate conducts
 
@@ -29,9 +29,9 @@ Open **http://localhost:3000** after `docker compose up --build`. Wait for **ENG
 
 1. Reset baseline, select **Always Fail** (220 ms / 503). Keep batch count **4**.
 2. Enter **Focus View** and click **Send Batch** once; wait for all four to finish. Each logical failure uses 3 attempts and the 200/400 ms waits, about 1260 ms plus overhead.
-3. Observe **LIVE GATE OPEN** and four failed logical histories: backend rolling failure ratio **4 / 4 = 100%**, with 12 upstream receipts. Immediately click **Send Request**: it travels inlet → rejection shunt with **0 attempts**; upstream receipts stay 12.
+3. Observe **LIVE GATE OPEN**, four failed logical histories and 12 upstream receipts. The minimum is four calls, not completions: in this concurrent batch, the third final failure can already trip at **3 / 4 = 75%**. Already-admitted work still finishes. Active-instance native counters restart for recovery isolation; inspect lifetime histories to see the original failures. Immediately click **Send Request**: it travels inlet → rejection shunt with **0 attempts**; upstream receipts stay 12, while native calls increase.
 4. **Exit Focus**, then click **Recover Service** (normal 260 ms); this does **not** close the gate. Wait for the actual **LIVE GATE HALF_OPEN**, about 7 s after opening. Zero on the countdown alone is not admission authority.
-5. Enter **Focus View** and click **Send Batch** once. The probe makes 1 successful attempt; the other 3 callers reject. The gate closes. Successful probe becomes the first sample in the new rolling baseline: **0 / 1 = 0%**.
+5. Enter **Focus View** and click **Send Batch** once. The probe makes 1 successful attempt; the other 3 callers reject. The gate closes. The active native instance has one successful completion and retains its OPEN/HALF_OPEN rejection calls; failures/calls is **0%**. Closing alone does not reset those statistics.
 
 **Counts after step 5:** 5 completed logical operations (4 failed + 1 successful), 4 rejected admissions (1 OPEN + 3 concurrent), **13 upstream receipts**. An OPEN rejection does not extend the recovery wait. History and upstream receipts—not animation timing—prove the probe exclusivity.
 
@@ -47,4 +47,4 @@ Open **http://localhost:3000** after `docker compose up --build`. Wait for **ENG
 
 ## Guided alternative
 
-**Start Auto Demo** resets and runs normal → slow → reset → four sequential 503 failures → OPEN rejection → actual HALF_OPEN → recovered single probe → alternating retry. Stop prevents future sends; admitted work still settles. At default durations allow roughly 20–30 s for the real sequence; visible journeys retain their minimum stages independently. [UI guide](ui.md) explains inspection, always-live journeys and reconnect; [Node acceptance harness](verification.md) additionally proves the exact inclusive **2 failures + 2 successes = 50%** boundary with a fast test policy.
+**Start Auto Demo** resets and runs normal → slow → reset → four sequential 503 failures → OPEN rejection → actual HALF_OPEN → recovered single probe → alternating retry. Stop prevents future sends; admitted work still settles. At default durations allow roughly 20–30 s for the real sequence; visible journeys retain their minimum stages independently. [UI guide](ui.md) explains inspection, always-live journeys and reconnect; [Node acceptance harness](verification.md) additionally proves that **2 failures + 2 successes = 50% stays CLOSED**, a subsequent failure opens above 50%, and pending/rejected calls use native counters. Verification runs against an isolated Compose stack.

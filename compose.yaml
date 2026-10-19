@@ -41,7 +41,7 @@ services:
       dockerfile: apps/frontend/Dockerfile
     init: true
     ports:
-      - "127.0.0.1:3000:80"
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:80"
     depends_on:
       backend:
         condition: service_healthy

@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { parseComposeContainers } from './compose-output.mjs';
 
 const root = resolve(import.meta.dirname, '..');
-const base = 'http://127.0.0.1:3000';
+const base = `http://${docker('compose', 'port', 'frontend', '80')}`;
 const defaults = {
   attemptTimeoutMs: 800, retries: 2, backoffMs: 200, operationDeadlineMs: 3000,
   errorThresholdPercentage: 50, minimumVolume: 4, rollingWindowMs: 20000, recoveryMs: 7000,
@@ -27,7 +27,8 @@ async function api(path, method = 'GET', body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const value = await response.json();
-  assert(response.ok, `${method} ${path}: ${response.status} ${JSON.stringify(value)}`);
+  assert.equal(response.status, method === 'POST' ? 201 : 200,
+    `${method} ${path}: ${response.status} ${JSON.stringify(value)}`);
   return value;
 }
 async function until(read, predicate, label, timeout = 5000) {
@@ -42,6 +43,13 @@ async function until(read, predicate, label, timeout = 5000) {
 }
 const snapshot = () => api('snapshot');
 const external = patch => api('external', 'PATCH', patch);
+function dependency(patch) {
+  // Change the real dependency through its public API, even while backend work is active.
+  const result = JSON.parse(docker('compose', 'exec', '-T', 'external-api', 'node', '-e',
+    `fetch('http://127.0.0.1:3002/config', {method:'PATCH', headers:{'content-type':'application/json'}, body:JSON.stringify(${JSON.stringify(patch)})}).then(async r => console.log(JSON.stringify({status:r.status, body:await r.json()})))`));
+  assert.equal(result.status, 200);
+  return result.body;
+}
 const request = async (count = 1) => (await api('requests', 'POST', { count })).results;
 async function idle() {
   return until(snapshot, s => s.metrics.active === 0 && s.external?.metrics.active === 0, 'engine/upstream idle');
@@ -120,7 +128,7 @@ for (const container of containers) {
   const ports = JSON.parse(docker('inspect', '--format', '{{json .NetworkSettings.Ports}}', container.ID));
   const published = Object.entries(ports ?? {}).filter(([, bindings]) => bindings?.length);
   if (container.Service === 'frontend') {
-    assert.deepEqual(published, [['80/tcp', [{ HostIp: '127.0.0.1', HostPort: '3000' }]]]);
+    assert.deepEqual(published, [['80/tcp', [{ HostIp: '127.0.0.1', HostPort: new URL(base).port }]]]);
   } else {
     assert.deepEqual(published, []);
     assert.equal(docker('inspect', '--format', '{{.Config.User}}', container.ID), 'node');
@@ -207,29 +215,104 @@ try {
   assert.equal(new Set(alternating.external.metrics.logs.map(log => log.requestId)).size, 1);
   pass('Intermittent: two real attempts, one successful logical breaker sample.');
 
-  async function openAtBoundary() {
-    await reset({ ...fast, retries: 0, attemptTimeoutMs: 400, operationDeadlineMs: 1500, minimumVolume: 4 });
+  const nativeFailures = [];
+  async function nativeCase(label, check) {
+    try { await check(); pass(label); }
+    catch (error) {
+      nativeFailures.push(error);
+      console.error(`FAIL ${label}: ${error.message}`);
+    }
+  }
+  const nativePolicy = { ...fast, retries: 0, attemptTimeoutMs: 1000, operationDeadlineMs: 1500, minimumVolume: 4 };
+
+  await nativeCase('Native threshold: exactly 50% stays CLOSED; the next failure opens above 50%.', async () => {
+    await reset(nativePolicy);
     await external({ mode: 'fail', errorStatus: 503 });
     for (let i = 0; i < 2; i++) assert.equal((await request())[0].outcome, 'failure');
-    await external({ mode: 'normal' });
-    assert.equal((await request())[0].outcome, 'success');
     assert.equal((await snapshot()).state, 'CLOSED');
-    assert.equal((await request())[0].outcome, 'success');
-    const opened = await observed(4);
+    await external({ mode: 'normal' });
+    for (let i = 0; i < 2; i++) assert.equal((await request())[0].outcome, 'success');
+    const boundary = await observed(4);
+    assert.equal(boundary.state, 'CLOSED', 'Exactly 50% must not open a native >50% breaker');
+    assert.equal(boundary.metrics.rollingCalls, 4);
+    assert.equal(boundary.metrics.rollingCompleted, 4);
+    assert.equal(boundary.metrics.rollingFailed, 2);
+    assert.equal(boundary.metrics.errorPercentage, 50);
+    await external({ mode: 'fail' });
+    const [failure] = await request();
+    assert.equal(failure.outcome, 'failure');
+    const opened = await observed(5);
     assert.equal(opened.state, 'OPEN');
-    assert.equal(opened.metrics.rollingCompleted, 4);
-    assert.equal(opened.metrics.rollingFailed, 2);
-    assert.equal(opened.metrics.errorPercentage, 50);
+    assert.equal(opened.metrics.completed, 5);
+    assert.equal(opened.metrics.failed, 3);
     assert.equal(opened.recoveryAt, opened.openedAt + opened.policy.recoveryMs);
-    const [rejection] = await request();
-    assert.equal(rejection.outcome, 'rejected');
-    assert.equal(rejection.attempts, 0);
-    assert.equal((await observed(4)).external.metrics.received, 4);
-    return opened;
-  }
-  const opened = await openAtBoundary();
-  pass('Inclusive boundary: 2 failures + 2 successes opens at 4 completions; OPEN rejection adds no HTTP.');
-  assert(opened.recoveryAt > opened.serverTime);
+    assert(opened.events.some(event => event.type === 'CIRCUIT_OPENED' &&
+      event.requestId === failure.requestId && event.reason === 'error-threshold'));
+  });
+
+  await nativeCase('Native upper boundary: a configured 100% threshold does not open at exactly 100%.', async () => {
+    await reset({ ...nativePolicy, errorThresholdPercentage: 100 });
+    await external({ mode: 'fail' });
+    for (let i = 0; i < 4; i++) assert.equal((await request())[0].outcome, 'failure');
+    const current = await observed(4);
+    assert.equal(current.state, 'CLOSED');
+    assert.equal(current.metrics.rollingCalls, 4);
+    assert.equal(current.metrics.rollingFailed, 4);
+    assert.equal(current.metrics.errorPercentage, 100);
+  });
+
+  await nativeCase('Native calls include pending actions; returned active histories remain immutable.', async () => {
+    await reset({ ...nativePolicy, minimumVolume: 1000 });
+    await external({ mode: 'normal', latencyMs: 350 });
+    const pending = request(2);
+    try {
+      const active = await until(snapshot, s => s.metrics.active === 2 &&
+        s.external?.metrics.active === 2, 'two real pending HTTP actions');
+      assert.equal(active.metrics.rollingCalls, 2);
+      assert.equal(active.metrics.rollingCompleted, 0);
+      assert.equal(active.metrics.rollingFailed, 0);
+      assert.equal(active.metrics.errorPercentage, 0);
+      assert(active.histories.every(history => history.outcome === undefined && history.attempts.length === 1));
+      const results = await pending;
+      assert(results.every(result => result.outcome === 'success' && result.attempts === 1));
+      const complete = await observed(2);
+      assert.equal(complete.metrics.rollingCalls, 2);
+      assert.equal(complete.metrics.rollingCompleted, 2);
+      assert(active.histories.every(history => history.outcome === undefined));
+    } finally { await pending; }
+  });
+
+  await nativeCase('Native calls include OPEN rejections without sending any upstream HTTP.', async () => {
+    await reset(nativePolicy);
+    await external({ mode: 'fail' });
+    for (let i = 0; i < 4; i++) assert.equal((await request())[0].outcome, 'failure');
+    const before = await observed(4);
+    assert.equal(before.state, 'OPEN');
+    const rejected = await request(3);
+    assert(rejected.every(result => result.outcome === 'rejected' && result.attempts === 0));
+    const after = await observed(4);
+    assert.equal(after.state, 'OPEN');
+    assert.equal(after.metrics.rollingCalls, before.metrics.rollingCalls + 3);
+    assert.equal(after.metrics.rollingCompleted, before.metrics.rollingCompleted);
+    assert.equal(after.metrics.rollingFailed, before.metrics.rollingFailed);
+    assert.equal(after.metrics.completed, 4);
+    assert.equal(after.metrics.failed, 4);
+    assert.equal(after.metrics.rejected, 3);
+  });
+
+  await nativeCase('Native sampling counts one fire for a logical operation that retries successfully.', async () => {
+    await reset();
+    await external({ mode: 'intermittent', intermittent: 'alternating' });
+    const [result] = await request();
+    assert.equal(result.outcome, 'success');
+    assert.equal(result.attempts, 2);
+    const current = await observed(2);
+    assert.equal(current.metrics.rollingCalls, 1);
+    assert.equal(current.metrics.rollingCompleted, 1);
+    assert.equal(current.metrics.rollingFailed, 0);
+    assert.equal(current.metrics.errorPercentage, 0);
+  });
+  if (nativeFailures.length) throw new AggregateError(nativeFailures, 'Native Opossum acceptance failed');
 
   async function probeCase(mode, expected) {
     await reset({ ...fast, attemptTimeoutMs: 400, operationDeadlineMs: 1500, minimumVolume: 4 });
@@ -257,6 +340,43 @@ try {
   await probeCase('normal', 'CLOSED');
   await probeCase('fail', 'OPEN');
   pass('Recovery timer is authoritative; HALF_OPEN admits one probe/no retries and closes or reopens on its real result.');
+
+  for (const oldMode of ['normal', 'fail']) {
+    await reset({ ...nativePolicy, errorThresholdPercentage: 1, minimumVolume: 1,
+      attemptTimeoutMs: 3000, operationDeadlineMs: 5000, recoveryMs: 250 });
+    await external({ mode: oldMode, latencyMs: 1800 });
+    const old = request();
+    let probe;
+    try {
+      await until(snapshot, s => s.external?.metrics.received === 1 && s.metrics.active === 1, 'old action in flight');
+      dependency({ mode: 'fail', latencyMs: 0 });
+      assert.equal((await request())[0].outcome, 'failure');
+      assert.equal((await snapshot()).state, 'OPEN');
+      await until(snapshot, s => s.state === 'HALF_OPEN', 'isolated recovery gate');
+      dependency({ mode: 'normal', latencyMs: 2400 });
+      probe = request();
+      await until(snapshot, s => s.histories.some(h => h.probe && h.finishedAt === undefined), 'pending recovery probe');
+      const [oldResult] = await old;
+      assert.equal(oldResult.outcome, oldMode === 'normal' ? 'success' : 'failure');
+      assert.equal((await snapshot()).state, 'HALF_OPEN');
+      assert.equal((await request())[0].outcome, 'rejected');
+      const during = await until(snapshot, s => s.external?.metrics.received === 3 &&
+        s.external.metrics.active === 1 && s.metrics.active === 1, 'old result settled while probe remains pending');
+      assert.equal(during.state, 'HALF_OPEN');
+      assert.equal(during.metrics.rollingCalls, 2);
+      assert.equal(during.metrics.rollingCompleted, 0);
+      const [recovery] = await probe;
+      assert.equal(recovery.outcome, 'success');
+      assert.equal(recovery.attempts, 1);
+      const closed = await observed(3);
+      assert.equal(closed.state, 'CLOSED');
+      assert.equal(closed.metrics.completed, 3);
+      assert.equal(closed.metrics.rollingCalls, 2);
+      assert.equal(closed.metrics.rollingCompleted, 1);
+      assert.equal(closed.events.filter(event => event.type === 'CIRCUIT_CLOSED' && event.reason === 'probe-succeeded').length, 1);
+    } finally { await Promise.allSettled([old, probe].filter(Boolean)); }
+    pass(`Late old ${oldMode === 'normal' ? 'success' : 'failure'} cannot close/reopen a newer pending probe or enter its native statistics.`);
+  }
 
   await reset();
   const cursor = (await snapshot()).cursor;

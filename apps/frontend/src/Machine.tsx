@@ -197,7 +197,6 @@ export function Machine({ snapshot, journeys, focus = false, selected, inspect, 
       <circle cx="310" cy="300" r="9" className="contact-pivot" />
       <circle cx="410" cy="300" r="7" className="contact-pivot" />
       <path d="M363 325 V344 M351 332 H375" className="contact-spring" />
-      <text x="365" y="373" textAnchor="middle" className="svg-small">{closed ? 'CONTACTS TOUCHING' : probe ? 'CONTROLLED CONNECTION' : 'CONTACTS SEPARATED'}</text>
       <text ref={recoveryValue} data-testid="recovery-countdown" x="365" y="398" textAnchor="middle" className="svg-small">{closed ? 'ADMISSION ENABLED' : probe ? 'SINGLE PROBE / NO RETRY' : 'RECOVERY WAIT'}</text>
     </g>
     <g {...partProps('probe')}>

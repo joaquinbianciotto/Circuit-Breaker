@@ -8,6 +8,8 @@ docker compose up --build
 
 Abrí **http://localhost:3000**. Solo se requiere **Docker con Docker Compose**; las compilaciones instalan dentro de los contenedores las dependencias fijadas en el archivo de bloqueo. No se necesita Node/npm en el equipo anfitrión, un archivo de entorno, una base de datos ni una cuenta. Esperá a que los tres servicios estén saludables. Para iniciar en segundo plano: `docker compose up --build -d --wait`.
 
+El puerto publicado se puede cambiar con `FRONTEND_PORT` (3000 por defecto); siempre queda limitado a `127.0.0.1`. `FRONTEND_PORT=0` permite que Docker asigne un puerto libre, consultable con `docker compose port frontend 80`.
+
 Seleccioná **Normal Response → Send Request**, o **Start Auto Demo** para la secuencia real guiada. Las [guías de cuatro escenarios de uso para presentar con un proyector](docs/scenarios.md) explican exactamente qué pulsar y qué contar.
 
 ## Prueba directa de caída y recuperación
@@ -45,7 +47,9 @@ El navegador utiliza `/api` en el mismo origen, incluido SSE sin almacenamiento 
 | Reintentos adicionales | 2 (hasta 3 intentos) |
 | Esperas entre reintentos | 200 ms y luego 400 ms |
 | Tiempo límite total de la operación | 3000 ms, incluidas las esperas y la sobrecarga |
-| Umbral de apertura | ≥50% de fallos entre las operaciones lógicas completadas (inclusivo) |
-| Volumen mínimo de operaciones completadas | 4 |
+| Umbral de apertura | >50% de fallos sobre llamadas a `fire()`, según las estadísticas nativas de Opossum |
+| Volumen mínimo de llamadas al circuito | 4 |
 | Ventana móvil | 20 s |
 | Espera de recuperación en OPEN | 7 s |
+
+Una operación lógica llama una sola vez al circuito, aunque tenga reintentos. El denominador nativo incluye llamadas pendientes y rechazos de Opossum; la apertura estadística se evalúa cuando falla una operación. Exactamente 50% no abre un umbral de 50%. No hay un ledger personalizado: los detalles y las métricas están en la [guía del motor](docs/engine.md#native-opossum-statistics), y la [verificación aislada sobre Compose](docs/verification.md#current-compose-only-workflow) no modifica el stack de presentación.

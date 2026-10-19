@@ -1,8 +1,42 @@
-# T4 verification — observed results and limits
+# Verification evidence
+
+## Current Compose-only workflow
+
+The native Opossum replacement is verified against rebuilt production containers in an **isolated three-service Compose project**, not host unit servers. Scenario writers run sequentially because they reset that project's in-memory data. The regular presentation stack is left untouched.
+
+```sh
+export COMPOSE_PROJECT_NAME=cb-native-check
+export FRONTEND_PORT=0
+docker compose up --build -d --wait --wait-timeout 120
+docker compose port frontend 80
+node scripts/verify-compose.mjs
+# When finished with this isolated project only:
+docker compose down
+unset COMPOSE_PROJECT_NAME FRONTEND_PORT
+```
+
+`FRONTEND_PORT` defaults to 3000 for normal startup; 0 requests a free loopback port. The acceptance and `--docker` browser harnesses discover the selected project's published port through Compose. Host Node is only the HTTP/SSE client for this optional verification; application startup still requires only Docker. No host `npm test`, Vitest, native-development server, dependency installation or regular-stack restart is used for this change.
+
+### Native-statistics results
+
+This run used project `cb-native-01a15129`:
+
+- **RED:** new native assertions exited 1 against the previous ledger implementation: exact 50% and 100% incorrectly opened, and the native call counter was absent.
+- **GREEN:** after rebuilding, **16 acceptance groups passed, exit 0**. Defaults and upstream state were restored; test containers stayed running during the checks.
+- Native cases cover strict `>`, minimum call volume, pending/OPEN-rejected calls, one native call despite HTTP retries, and immutable returned histories.
+- Retained scenarios cover real HTTP cancellation, 503 retries versus 422, exclusive single-attempt probes, failed-probe reopening, late old success/failure isolation, and real nginx SSE/cursor replay/heartbeat.
+- **Native UI / Auto Demo:** the installed headless browser CLI passed against the isolated Compose frontend with cache disabled: strict `>50%` summary, native threshold/minimum-call labels, a complete real Auto Demo (6 completed operations, 15 upstream receipts, one successful probe), reset to defaults, and zero page/console errors. This is not a rerun of every historical viewport/browser assertion below.
+- **Independent Compose rerun:** all 16 acceptance groups passed again, with the same three healthy isolated container IDs before/after and the original regular-stack IDs unchanged. No candidate-caused blocking finding was identified. The verifier marked R3 partial because the browser run and baseline comparison of the unrelated `Machine.tsx` deletion remained writer-owned; neither was independently rerun. No native code-review approval is claimed; the prior candidate's review is still pending its reviewer model configuration.
+
+The active Opossum counters restart when recovery isolation replaces an instance. Lifetime histories/counters remain authoritative for the failures that tripped it; native `close()` alone does not reset the current instance's statistics. The historical inclusive-boundary result below is superseded by native `>50%` behavior.
+
+## Historical T4 presentation verification
+
+The remaining records describe earlier presentation corrections, their then-current ledger semantics, commands and limits. They are retained as historical evidence, **not results of the current native-statistics candidate**.
 
 **Builds, 73 tests, both npm audits, 10 Docker acceptance groups and production Chromium checks pass.** Independent T4 verification and a separate post-correction independent spotcheck both passed. The latter reran `npm test`, `npm run verify:compose`, the cache-disabled production browser smoke, before/after container status and the final defaults snapshot. All three container IDs stayed unchanged during that final run; the corrected Focus bounds, fonts, keyboard access, reduced motion and mobile containment passed with zero unexpected browser errors. These functional results are not native code-review approval.
 
-## Reproduce against the running lab
+## Historical reproduction commands
 
 Use the existing host dependencies and Playwright/Chromium installation; no installation was performed during this correction. Run scenario writers sequentially because they reset ephemeral lab data.
 
@@ -78,7 +112,7 @@ Escape exits Focus and returns keyboard focus to its toggle; keyboard inspection
 
 Documentation has no meaningful behavioral RED; its provenance and claims were checked by structural readback.
 
-## Actual Docker scenario coverage
+## Historical Docker scenario coverage
 
 Every application call goes through frontend nginx at port 3000, not host backend/upstream ports. Read-only Docker introspection verifies service count, health, loopback publication, nonroot Node runtimes, Node 22.22.2, ESM contract resolution and absence of build tools in Node runtime images.
 
@@ -88,7 +122,7 @@ Every application call goes through frontend nginx at port 3000, not host backen
 | Slow | Fast policy: 100 ms timeout, 2 retries, 15/30 ms waits, 500 ms deadline; three timeouts and actual upstream cancellations within the operation budget. |
 | 503 / 422 | 503 gives exactly three attempts and two waits; 422 gives one attempt without retry. |
 | Intermittent | Two attempts under one request ID, one completed logical success. |
-| Inclusive threshold | Two failures plus two successes open at exactly four completed samples / 50%. |
+| Historical inclusive threshold (superseded) | The earlier ledger opened after two failures plus two successes; native Opossum now stays CLOSED at exactly 50%. |
 | OPEN | Rejection creates zero attempts and no upstream receipt increment. |
 | Recovery / probe | Actual recovery deadline; concurrent batch admits one single-attempt HALF_OPEN probe without retries and rejects others. Success closes; failure reopens. |
 | SSE / replay | Correlated execution, unbuffered frames, Last-Event-ID precedence through nginx, strictly-after replay with no duplicates then live delivery. |

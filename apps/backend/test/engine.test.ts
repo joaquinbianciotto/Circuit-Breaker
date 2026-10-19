@@ -274,8 +274,8 @@ describe('controlled monotonic backoff with real HTTP', () => {
   });
 });
 
-describe('real Opossum gate and completed ledger', () => {
-  it('opens at exactly two failures / four completed operations, including a final success', async () => {
+describe('native Opossum gate and statistics', () => {
+  it('stays closed at exactly 50%, then opens on a failure above the threshold', async () => {
     replacePolicy({ retries: 0 });
     await configure({ mode: 'fail' });
     await engine.run();
@@ -283,33 +283,36 @@ describe('real Opossum gate and completed ledger', () => {
     expect(engine.state).toBe('CLOSED');
     await configure({ mode: 'normal' });
     await engine.run();
+    await engine.run();
     expect(engine.state).toBe('CLOSED');
+    expect(engine.snapshot().metrics).toMatchObject({ rollingCalls: 4, rollingCompleted: 4, rollingFailed: 2, errorPercentage: 50 });
+    await configure({ mode: 'fail' });
     await engine.run();
     expect(engine.state).toBe('OPEN');
-    expect(engine.snapshot().metrics).toMatchObject({ rollingCompleted: 4, rollingFailed: 2, errorPercentage: 50 });
     const received = (await metrics()).received;
     const rejected = await Promise.all(Array.from({ length: 10 }, () => engine.run()));
     expect(rejected.every(result => result.outcome === 'rejected' && result.attempts === 0)).toBe(true);
     expect((await metrics()).received).toBe(received);
-    expect(engine.snapshot().metrics.rollingCompleted).toBe(4);
+    expect(engine.snapshot().metrics).toMatchObject({ completed: 5, failed: 3, rejected: 10,
+      rollingCalls: 10, rollingCompleted: 0, rollingFailed: 0 });
     expect(engine.snapshot().events.filter(event => event.type === 'CIRCUIT_OPENED')).toHaveLength(1);
     expect(engine.snapshot().recoveryAt! - engine.snapshot().openedAt!).toBe(policy.recoveryMs);
   });
-  it('excludes pending actions until completed and retains active request histories', async () => {
+  it('counts pending fires and does not evaluate statistical opening on successful completions', async () => {
     replacePolicy({ retries: 0, attemptTimeoutMs: 1000, recoveryMs: 1000 });
     await configure({ latencyMs: 250 });
     const pending = [engine.run(), engine.run()];
     await until(async () => (await metrics()).received === 2);
     const snapshot = engine.snapshot();
-    expect(snapshot.metrics).toMatchObject({ active: 2, rollingCompleted: 0 });
+    expect(snapshot.metrics).toMatchObject({ active: 2, rollingCalls: 2, rollingCompleted: 0 });
     expect(snapshot.histories.every(history => !history.outcome && history.attempts.length === 1)).toBe(true);
     await configure({ mode: 'fail', latencyMs: 0 });
     await engine.run(); await engine.run();
     expect(engine.state).toBe('CLOSED');
-    expect(engine.snapshot().metrics.rollingCompleted).toBe(2);
+    expect(engine.snapshot().metrics).toMatchObject({ rollingCalls: 4, rollingCompleted: 2, rollingFailed: 2, errorPercentage: 50 });
     await Promise.all(pending);
-    expect(engine.state).toBe('OPEN');
-    expect(engine.snapshot().metrics).toMatchObject({ rollingCompleted: 4, rollingFailed: 2 });
+    expect(engine.state).toBe('CLOSED');
+    expect(engine.snapshot().metrics).toMatchObject({ rollingCalls: 4, rollingCompleted: 4, rollingFailed: 2 });
     // Returned snapshots are immutable copies, not live histories.
     expect(snapshot.histories[0].outcome).toBeUndefined();
   });
@@ -342,7 +345,8 @@ describe('real Opossum gate and completed ledger', () => {
     expect(engine.snapshot().events.filter(event => event.type === 'CIRCUIT_OPENED')).toHaveLength(2);
   });
   it.each(['normal', 'fail'] as const)('old %s completion cannot consume or alter the new HALF_OPEN probe', async oldMode => {
-    replacePolicy({ minimumVolume: 1, retries: 0, attemptTimeoutMs: 1000, operationDeadlineMs: 1500, recoveryMs: 40 });
+    replacePolicy({ minimumVolume: 1, errorThresholdPercentage: 1, retries: 0,
+      attemptTimeoutMs: 1000, operationDeadlineMs: 1500, recoveryMs: 40 });
     await configure({ mode: oldMode, latencyMs: 200 });
     const old = engine.run();
     await until(async () => (await metrics()).received === 1);
@@ -355,7 +359,7 @@ describe('real Opossum gate and completed ledger', () => {
     await old;
     expect(engine.state).toBe('HALF_OPEN');
     expect((await engine.run()).outcome).toBe('rejected');
-    expect(engine.snapshot().metrics.rollingCompleted).toBe(2);
+    expect(engine.snapshot().metrics).toMatchObject({ rollingCalls: 2, rollingCompleted: 0 });
     expect((await probe).outcome).toBe('success');
     expect(engine.state).toBe('CLOSED');
     expect(engine.snapshot().events.filter(event => event.type === 'CIRCUIT_CLOSED')).toHaveLength(1);
@@ -391,6 +395,29 @@ describe('mutation integrity', () => {
     const completed = await Promise.all(pending);
     expect(completed.every(result => result.outcome === 'success')).toBe(true);
     expect((await metrics()).received).toBe(100);
+  });
+  it('clears the external observation and timestamp when a successful refresh is followed by failure', async () => {
+    const external = await engine.refreshExternal();
+    expect(external).not.toBeNull();
+    const observed = engine.snapshot();
+    expect(observed.external).toEqual(external);
+    expect(observed.externalObservedAt).toEqual(expect.any(Number));
+    expect(observed.externalError).toBeUndefined();
+
+    await upstream.close();
+    await expect(engine.refreshExternal()).resolves.toBeNull();
+    const failed = engine.snapshot();
+    expect(failed.external).toBeNull();
+    expect(failed.externalObservedAt).toBeNull();
+    expect(failed.externalError).toBe('fetch failed');
+    expect(failed.metrics).toEqual(observed.metrics);
+    expect(failed.histories).toEqual(observed.histories);
+    expect(failed.events).toEqual(observed.events);
+    expect(failed.cursor).toBe(observed.cursor);
+    expect(failed.state).toBe(observed.state);
+    expect(failed.policy).toEqual(observed.policy);
+    expect(observed.external).toEqual(external);
+    expect(observed.externalObservedAt).toEqual(expect.any(Number));
   });
   it('external config proxy aborts a hung real HTTP response after its bounded timeout', async () => {
     const stalled = Fastify({ forceCloseConnections: true });

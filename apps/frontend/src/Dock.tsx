@@ -26,8 +26,8 @@ const policyFields: { key: keyof Policy; label: string; min: number; max: number
   { key: 'attemptTimeoutMs', label: 'Attempt timeout', min: 10, max: 30000, unit: 'ms' },
   { key: 'retries', label: 'Extra retries', min: 0, max: 2, unit: 'max' },
   { key: 'backoffMs', label: 'Base backoff', min: 0, max: 5000, unit: 'ms' },
-  { key: 'errorThresholdPercentage', label: 'Inclusive threshold', min: 1, max: 100, unit: '%' },
-  { key: 'minimumVolume', label: 'Minimum completed', min: 1, max: 10000, unit: 'ops' },
+  { key: 'errorThresholdPercentage', label: 'Error threshold (>)', min: 1, max: 100, unit: '%' },
+  { key: 'minimumVolume', label: 'Minimum calls', min: 1, max: 10000, unit: 'calls' },
   { key: 'rollingWindowMs', label: 'Rolling window', min: 100, max: 300000, unit: 'ms' },
   { key: 'recoveryMs', label: 'Recovery wait', min: 20, max: 60000, unit: 'ms' },
   { key: 'operationDeadlineMs', label: 'Operation deadline', min: 10, max: 90000, unit: 'ms' },
@@ -112,7 +112,7 @@ export function Dock({ snapshot, connected, pending, demo, demoStage, message, c
     </section>
     <section className="dock-section">
       <div className="section-label"><h2>Protection policy</h2><span className="index-label">03</span></div>
-      <p className="policy-summary mono">{snapshot.policy.attemptTimeoutMs} ms · {snapshot.policy.retries} retries · ≥{snapshot.policy.errorThresholdPercentage}%</p>
+      <p className="policy-summary mono">{snapshot.policy.attemptTimeoutMs} ms · {snapshot.policy.retries} retries · &gt;{snapshot.policy.errorThresholdPercentage}%</p>
       <details className="editor" data-testid="policy-editor">
         <summary>Edit all policy parameters</summary>
         <form onSubmit={event => { event.preventDefault(); validate(() => { actions.policy(validatePolicyPatch(policy, snapshot.policy)); setPolicyDirty(false); }); }}>
@@ -123,7 +123,7 @@ export function Dock({ snapshot, connected, pending, demo, demoStage, message, c
               onChange={event => { setPolicyDirty(true); setPolicy({ ...policy, [field.key]: Number(event.target.value) }); }} />
           </label>)}
           <p className="hint mono">Derived waits: {policy.backoffMs} / {policy.backoffMs * 2} ms</p>
-          <p className="hint">Applying resets the rolling baseline and closes the gate. Lifetime history stays.</p>
+          <p className="hint">Applying resets native statistics and closes the gate. Lifetime history stays.</p>
           <button className="button w-full" disabled={managementDisabled} type="submit">Apply Policy</button>
         </form>
       </details>

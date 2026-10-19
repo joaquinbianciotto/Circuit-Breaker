@@ -6,7 +6,7 @@ const snapshot = (overrides: Partial<Snapshot> = {}): Snapshot => ({
   kind: 'snapshot', epoch: 'a', cursor: 'a:0', serverTime: 1000,
   state: 'CLOSED', openedAt: null, recoveryAt: null, policy: { ...DEFAULT_POLICY },
   metrics: { completed: 0, succeeded: 0, failed: 0, rejected: 0, active: 0,
-    rollingCompleted: 0, rollingFailed: 0, errorPercentage: 0 },
+    rollingCalls: 0, rollingCompleted: 0, rollingFailed: 0, errorPercentage: 0 },
   histories: [], events: [], external: null, externalObservedAt: null, ...overrides,
 });
 const event = (sequence: number, type: EngineEvent['type'], fields: Partial<EngineEvent> = {}): EngineEvent => ({

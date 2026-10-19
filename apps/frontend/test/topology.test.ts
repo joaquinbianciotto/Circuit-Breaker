@@ -10,7 +10,7 @@ const observed: Snapshot = {
   kind: 'snapshot', epoch: 'a', cursor: 'a:1', serverTime: 1000, state: 'CLOSED',
   openedAt: null, recoveryAt: null, policy: { ...DEFAULT_POLICY }, histories: [], events: [],
   metrics: { completed: 0, succeeded: 0, failed: 0, rejected: 0, active: 0,
-    rollingCompleted: 0, rollingFailed: 0, errorPercentage: 0 }, external: null, externalObservedAt: null,
+    rollingCalls: 0, rollingCompleted: 0, rollingFailed: 0, errorPercentage: 0 }, external: null, externalObservedAt: null,
 };
 const renderStage = (route: Route, reduced: boolean) => {
   vi.stubGlobal('matchMedia', () => ({ matches: reduced }));

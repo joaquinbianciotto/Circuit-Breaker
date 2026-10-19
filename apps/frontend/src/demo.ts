@@ -20,7 +20,7 @@ export async function runDemo(actions: DemoActions, signal: AbortSignal) {
   await step('02 / Admit one operation', actions.send);
   await step('03 / Timeout & bounded retries', () => actions.configure({ mode: 'slow', latencyMs: 1500 }));
   await step('03 / Observe HTTP aborts', actions.send);
-  await step('04 / Clear the completed baseline', actions.reset);
+  await step('04 / Clear breaker statistics', actions.reset);
   await step('04 / Force 503 failures', () => actions.configure({ mode: 'fail', errorStatus: 503, latencyMs: 220 }));
   for (let i = 1; i <= 4; i++) await step(`04 / Logical failure ${i} of 4`, actions.send);
   await step('05 / OPEN admission rejection', actions.send);

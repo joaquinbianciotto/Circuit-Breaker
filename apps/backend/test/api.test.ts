@@ -99,7 +99,7 @@ describe('compiled Nest REST and real SSE transport', () => {
     expect(batch.data.results.every((result: any) => result.outcome === 'rejected' && result.attempts === 0)).toBe(true);
     const snapshot = (await json('/api/snapshot')).data;
     expect(snapshot.external.metrics.received).toBe(1);
-    expect(snapshot.metrics).toMatchObject({ completed: 1, failed: 1, rejected: 10, rollingCompleted: 1 });
+    expect(snapshot.metrics).toMatchObject({ completed: 1, failed: 1, rejected: 10, rollingCalls: 10, rollingCompleted: 0, rollingFailed: 0 });
   });
   it('strict config and count errors return 400 without changing policy', async () => {
     for (const count of [0, 11, 1.1, '2', null]) {
